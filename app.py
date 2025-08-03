@@ -238,6 +238,13 @@ def export_excel(all_data, property_name):
 st.set_page_config(page_title="入居管理表アプリ", layout="wide")
 st.title("📊 収支報告書PDFから入居管理表を作成")
 
+# 認証
+PASSWORD = st.secrets["APP_PASSWORD"]
+pw = st.text_input("パスワードを入力してください", type="password")
+if pw != PASSWORD:
+    st.warning("正しいパスワードを入力してください。")
+    st.stop()
+
 property_name = st.text_input("物件名（例：ジーメゾン入間東藤沢）", value="ジーメゾン入間東藤沢")
 uploaded_files = st.file_uploader("収支報告書PDFを最大12ファイルまでアップロードしてください", type="pdf", accept_multiple_files=True)
 
