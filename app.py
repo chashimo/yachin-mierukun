@@ -33,13 +33,6 @@ logger = logging.getLogger(__name__)
 
 
 # ========== OpenAI設定 ==========
-'''
-def get_api_key():
-    key_file = Path.home() / ".mydocapp" / "apikey.txt"
-    return key_file.read_text().strip()
-openai.api_key = get_api_key()
-'''
-
 openai.api_key = st.secrets["OPENAI_API_KEY"]
 
 @retry(wait=wait_random_exponential(min=1, max=30), stop=stop_after_attempt(5))
