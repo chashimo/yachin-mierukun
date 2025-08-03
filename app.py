@@ -1,22 +1,22 @@
+# 非同期処理対応の完全統合スクリプト（OpenAI Vision API 並列呼び出し）
+
 import streamlit as st
 import os
 import io
 import json
-import tempfile
+import asyncio
+import base64
+import re
+import logging
+from datetime import datetime
 from pathlib import Path
 from PIL import Image
 import fitz  # PyMuPDF
-import base64
-import re
 import pdfplumber
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
-from tenacity import retry, wait_random_exponential, stop_after_attempt
 import openai
-
-import logging
-from datetime import datetime
 
 # ======= ログ設定 =======
 if not logging.getLogger().hasHandlers():
@@ -31,12 +31,10 @@ if not logging.getLogger().hasHandlers():
     )
 logger = logging.getLogger(__name__)
 
-
 # ========== OpenAI設定 ==========
 openai.api_key = st.secrets["OPENAI_API_KEY"]
 
-@retry(wait=wait_random_exponential(min=1, max=30), stop=stop_after_attempt(5))
-def call_openai_vision(base64_images, text_context, default_month_id):
+async def call_openai_vision_async(base64_images, text_context, default_month_id):
     image_parts = [{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}} for b64 in base64_images]
 
     messages = [
@@ -74,7 +72,7 @@ def call_openai_vision(base64_images, text_context, default_month_id):
         ]}
     ]
 
-    response = openai.chat.completions.create(
+    response = await openai.chat.completions.create(
         model="gpt-4o",
         messages=messages,
         temperature=0.0,
@@ -82,7 +80,7 @@ def call_openai_vision(base64_images, text_context, default_month_id):
     )
     return response.choices[0].message.content
 
-# ========== PDF処理 ==========
+# ========== ユーティリティ ==========
 def convert_pdf_to_images(pdf_bytes, dpi=200):
     pdf = fitz.open(stream=pdf_bytes, filetype="pdf")
     images = []
@@ -109,6 +107,49 @@ def extract_month_from_filename(filename: str) -> str:
     if match:
         return f"{match.group(1)}-{match.group(2).zfill(2)}"
     return "unknown"
+
+# ========== 各ファイル処理 ==========
+async def handle_file(file, max_attempts=3):
+    file_name = file.name
+    logger.info(f"開始: {file_name}")
+    default_month_id = extract_month_from_filename(file_name)
+    file_bytes = file.read()
+    images = convert_pdf_to_images(file_bytes)
+    base64_images = [convert_image_to_base64(img) for img in images]
+    text_context = extract_text_with_pdfplumber(file_bytes)
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            json_str = await call_openai_vision_async(base64_images, text_context, default_month_id)
+            json_str_clean = json_str.strip().removeprefix("```json").removeprefix("```").removesuffix("```")
+            if not json_str_clean.strip().startswith("{"):
+                raise ValueError("OpenAIの出力がJSON形式ではありません")
+            partial = json.loads(json_str_clean)
+            logger.info(f"{file_name}: JSON解析成功")
+            return partial
+        except Exception as e:
+            logger.warning(f"{file_name}: JSON解析失敗（試行{attempt}回目）: {e}")
+            if attempt == max_attempts:
+                return file_name, None
+
+# ========== 全ファイル並列処理 ==========
+async def process_files(files):
+    tasks = [handle_file(file) for file in files]
+    results = await asyncio.gather(*tasks)
+    all_data = {}
+    for result in results:
+        if isinstance(result, tuple):  # (filename, None)
+            st.warning(f"{result[0]} の出力がJSONとして解釈できませんでした。")
+            continue
+        for room_id, info in result.items():
+            if room_id not in all_data:
+                all_data[room_id] = info
+            else:
+                for key in ["name", "reikin", "shikikin", "koushinryo"]:
+                    if info.get(key):
+                        all_data[room_id][key] = info[key]
+                all_data[room_id]["monthly"].update(info.get("monthly", {}))
+    return all_data
 
 # ========== Excel生成 ==========
 def combine_bikou(info):
@@ -238,7 +279,6 @@ def export_excel(all_data, property_name):
 st.set_page_config(page_title="入居管理表アプリ", layout="wide")
 st.title("📊 収支報告書PDFから入居管理表を作成")
 
-# 認証
 PASSWORD = st.secrets["APP_PASSWORD"]
 pw = st.text_input("パスワードを入力してください", type="password")
 if pw != PASSWORD:
@@ -252,81 +292,9 @@ if uploaded_files and st.button("Excelファイルを生成"):
     if len(uploaded_files) > 12:
         st.warning("アップロードできるのは最大12ファイルまでです。")
     else:
-        all_data = {}
-        progress_bar = st.progress(0)
-        file_status = st.empty()
-        total_files = len(uploaded_files)
-
-        MAX_ATTEMPTS = 3  # 最大リトライ回数
-
-        for idx, file in enumerate(uploaded_files, 1):
-            file_status.markdown(f"**\U0001F4C4 {file.name} を処理中...**")
-
-            logger.info(f"開始: {file.name}")
-            default_month_id = extract_month_from_filename(file.name)
-            file_bytes = file.read()
-            progress_bar.progress((idx - 1 + 0.1) / total_files)
-
-            file_status.markdown(f"{file.name}: \U0001F5BC️ ページ画像への変換中")
-            images = convert_pdf_to_images(file_bytes)
-            logger.info(f"{file.name}: ページ数={len(images)}")
-            base64_images = [convert_image_to_base64(img) for img in images]
-            progress_bar.progress((idx - 1 + 0.3) / total_files)
-
-            file_status.markdown(f"{file.name}: \U0001F50D テキスト抽出中")
-            text_context = extract_text_with_pdfplumber(file_bytes)
-            logger.info(f"{file.name}: テキスト抽出完了")
-            progress_bar.progress((idx - 1 + 0.5) / total_files)
-
-            file_status.markdown(f"{file.name}: \U0001F916 OpenAI Visionで解析中")
-            for attempt in range(1, MAX_ATTEMPTS + 1):
-                try:
-                    json_str = call_openai_vision(base64_images, text_context, default_month_id)
-                    logger.info(f"{file.name}: OpenAI Vision 呼び出し完了（試行{attempt}回目）")
-
-                    # 余計な囲みの除去
-                    json_str_clean = json_str.strip()
-                    if json_str_clean.startswith("```json"):
-                        json_str_clean = json_str_clean[7:]
-                    if json_str_clean.startswith("```"):
-                        json_str_clean = json_str_clean[3:]
-                    if json_str_clean.endswith("```"):
-                        json_str_clean = json_str_clean[:-3]
-
-                    if not json_str_clean.strip().startswith("{"):
-                        raise ValueError("OpenAIの出力がJSON形式ではありません")
-
-                    partial = json.loads(json_str_clean)
-                    logger.info(f"{file.name}: JSON解析成功（試行{attempt}回目） 部屋数={len(partial)}")
-
-                    for room_id, info in partial.items():
-                        if room_id not in all_data:
-                            all_data[room_id] = info
-                        else:
-                            for key in ["name", "reikin", "shikikin", "koushinryo"]:
-                                if info.get(key):
-                                    all_data[room_id][key] = info[key]
-                            all_data[room_id]["monthly"].update(info.get("monthly", {}))
-
-                    break  # 成功したらループ抜ける
-
-                except Exception as e:
-                    logger.warning(f"{file.name}: JSON解析失敗（試行{attempt}回目）: {e}")
-                    if attempt == MAX_ATTEMPTS:
-                        st.warning(f"{file.name} の出力がJSONとして解釈できませんでした。{MAX_ATTEMPTS}回試行しましたが失敗しました。")
-
-            file_status.markdown(f"{file.name}: ✅ 処理完了")
-            progress_bar.progress(idx / total_files)
-
-        file_status.markdown("\U0001F4D8 Excelファイルを生成中...")
-        logger.info("Excel生成開始")
+        st.info("OpenAI Vision APIで並列処理中...")
+        all_data = asyncio.run(process_files(uploaded_files))
         excel_data, start_month, end_month = export_excel(all_data, property_name)
-        logger.info("Excel生成完了")
-        file_status.markdown("✅ Excelファイル生成完了")
-        st.success("Excelファイルが生成されました")
-
-        now_str = datetime.now().strftime("%Y-%m-%d_%H%M")
-        filename = f"{property_name}_入居管理表（{start_month}〜{end_month}）_{now_str}.xlsx"
-
-        st.download_button("\U0001F4E5 Excelをダウンロード", data=excel_data, file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        filename = f"{property_name}_入居管理表（{start_month}〜{end_month}）_{datetime.now().strftime('%Y-%m-%d_%H%M')}.xlsx"
+        st.download_button("Excelをダウンロード", data=excel_data, file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
