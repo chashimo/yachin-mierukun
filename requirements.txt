@@ -1,4 +1,4 @@
-treamlit
+streamlit
 openpyxl
 pdfplumber
 PyMuPDF
