@@ -257,51 +257,69 @@ if uploaded_files and st.button("Excelファイルを生成"):
         file_status = st.empty()
         total_files = len(uploaded_files)
 
+        MAX_ATTEMPTS = 3  # 最大リトライ回数
+
         for idx, file in enumerate(uploaded_files, 1):
-            file_status.markdown(f"**📄 {file.name} を処理中...**")
+            file_status.markdown(f"**\U0001F4C4 {file.name} を処理中...**")
 
             logger.info(f"開始: {file.name}")
             default_month_id = extract_month_from_filename(file.name)
             file_bytes = file.read()
             progress_bar.progress((idx - 1 + 0.1) / total_files)
 
-            file_status.markdown(f"{file.name}: 🖼️ ページ画像への変換中")
+            file_status.markdown(f"{file.name}: \U0001F5BC️ ページ画像への変換中")
             images = convert_pdf_to_images(file_bytes)
             logger.info(f"{file.name}: ページ数={len(images)}")
             base64_images = [convert_image_to_base64(img) for img in images]
             progress_bar.progress((idx - 1 + 0.3) / total_files)
 
-            file_status.markdown(f"{file.name}: 🔍 テキスト抽出中")
+            file_status.markdown(f"{file.name}: \U0001F50D テキスト抽出中")
             text_context = extract_text_with_pdfplumber(file_bytes)
             logger.info(f"{file.name}: テキスト抽出完了")
             progress_bar.progress((idx - 1 + 0.5) / total_files)
 
-            file_status.markdown(f"{file.name}: 🤖 OpenAI Visionで解析中")
-            try:
-                json_str = call_openai_vision(base64_images, text_context, default_month_id)
-                logger.info(f"{file.name}: OpenAI Vision 呼び出し完了")
-                partial = json.loads(json_str)
-                logger.info(f"{file.name}: JSON解析成功。部屋数={len(partial)}")
+            file_status.markdown(f"{file.name}: \U0001F916 OpenAI Visionで解析中")
+            for attempt in range(1, MAX_ATTEMPTS + 1):
+                try:
+                    json_str = call_openai_vision(base64_images, text_context, default_month_id)
+                    logger.info(f"{file.name}: OpenAI Vision 呼び出し完了（試行{attempt}回目）")
 
-                for room_id, info in partial.items():
-                    if room_id not in all_data:
-                        all_data[room_id] = info
-                    else:
-                        for key in ["name", "reikin", "shikikin", "koushinryo"]:
-                            if info.get(key):
-                                all_data[room_id][key] = info[key]
-                        all_data[room_id]["monthly"].update(info.get("monthly", {}))
+                    # 余計な囲みの除去
+                    json_str_clean = json_str.strip()
+                    if json_str_clean.startswith("```json"):
+                        json_str_clean = json_str_clean[7:]
+                    if json_str_clean.startswith("```"):
+                        json_str_clean = json_str_clean[3:]
+                    if json_str_clean.endswith("```"):
+                        json_str_clean = json_str_clean[:-3]
 
-            except json.JSONDecodeError:
-                logger.warning(f"{file.name}: JSON解析に失敗しました")
-                st.warning(f"{file.name} の出力がJSONとして解釈できませんでした。")
+                    if not json_str_clean.strip().startswith("{"):
+                        raise ValueError("OpenAIの出力がJSON形式ではありません")
+
+                    partial = json.loads(json_str_clean)
+                    logger.info(f"{file.name}: JSON解析成功（試行{attempt}回目） 部屋数={len(partial)}")
+
+                    for room_id, info in partial.items():
+                        if room_id not in all_data:
+                            all_data[room_id] = info
+                        else:
+                            for key in ["name", "reikin", "shikikin", "koushinryo"]:
+                                if info.get(key):
+                                    all_data[room_id][key] = info[key]
+                            all_data[room_id]["monthly"].update(info.get("monthly", {}))
+
+                    break  # 成功したらループ抜ける
+
+                except Exception as e:
+                    logger.warning(f"{file.name}: JSON解析失敗（試行{attempt}回目）: {e}")
+                    if attempt == MAX_ATTEMPTS:
+                        st.warning(f"{file.name} の出力がJSONとして解釈できませんでした。{MAX_ATTEMPTS}回試行しましたが失敗しました。")
 
             file_status.markdown(f"{file.name}: ✅ 処理完了")
             progress_bar.progress(idx / total_files)
 
-        file_status.markdown("📘 Excelファイルを生成中...")
+        file_status.markdown("\U0001F4D8 Excelファイルを生成中...")
         logger.info("Excel生成開始")
-        #excel_data = export_excel(all_data, property_name)
         excel_data, start_month, end_month = export_excel(all_data, property_name)
         logger.info("Excel生成完了")
         file_status.markdown("✅ Excelファイル生成完了")
@@ -310,5 +328,5 @@ if uploaded_files and st.button("Excelファイルを生成"):
         now_str = datetime.now().strftime("%Y-%m-%d_%H%M")
         filename = f"{property_name}_入居管理表（{start_month}〜{end_month}）_{now_str}.xlsx"
 
-        st.download_button("📥 Excelをダウンロード", data=excel_data, file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        st.download_button("\U0001F4E5 Excelをダウンロード", data=excel_data, file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
