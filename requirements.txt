@@ -1,0 +1,7 @@
+treamlit
+openpyxl
+pdfplumber
+PyMuPDF
+Pillow
+tenacity
+openai
