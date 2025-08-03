@@ -245,7 +245,7 @@ if pw != PASSWORD:
     st.warning("正しいパスワードを入力してください。")
     st.stop()
 
-property_name = st.text_input("物件名（例：ジーメゾン入間東藤沢）", value="ジーメゾン入間東藤沢")
+property_name = st.text_input("物件名（例：ジーメゾン入間東藤沢）", value="")
 uploaded_files = st.file_uploader("収支報告書PDFを最大12ファイルまでアップロードしてください", type="pdf", accept_multiple_files=True)
 
 if uploaded_files and st.button("Excelファイルを生成"):
