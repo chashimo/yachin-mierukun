@@ -286,7 +286,7 @@ if pw != PASSWORD:
 property_name = st.text_input("物件名（例：ジーメゾン入間東藤沢）", value="")
 uploaded_files = st.file_uploader("収支報告書PDFを最大12ファイルまでアップロードしてください", type="pdf", accept_multiple_files=True)
 
-if uploaded_files and st.button("Excelファイルを生成"):
+if uploaded_files and st.button("入居管理表を作成"):
     if len(uploaded_files) > 12:
         st.warning("アップロードできるのは最大12ファイルまでです。")
     else:
