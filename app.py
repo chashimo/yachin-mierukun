@@ -296,4 +296,4 @@ if uploaded_files and st.button("入居管理表を作成"):
         excel_data, start_month, end_month = export_excel(all_data, property_name)
         filename = f"{property_name}_入居管理表（{start_month}〜{end_month}）_{datetime.now().strftime('%Y-%m-%d_%H%M')}.xlsx"
         st.download_button("入居管理表をダウンロード", data=excel_data, file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        st.info("新規に別の入居管理表を作成する場合は、ブラウザのリロードボタンを押してください。")
+        st.info("新規に入居管理表を作成する場合は、ブラウザのリロードボタンを押してください。")
