@@ -1,4 +1,4 @@
-# 非同期処理対応の完全統合スクリプト（OpenAI Vision API 並列呼び出し）
+# 非同期処理対応の完全修正済みスクリプト（AsyncOpenAI 使用）
 
 import streamlit as st
 import os
@@ -13,10 +13,10 @@ from pathlib import Path
 from PIL import Image
 import fitz  # PyMuPDF
 import pdfplumber
+from openai import AsyncOpenAI
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
-import openai
 
 # ======= ログ設定 =======
 if not logging.getLogger().hasHandlers():
@@ -31,8 +31,8 @@ if not logging.getLogger().hasHandlers():
     )
 logger = logging.getLogger(__name__)
 
-# ========== OpenAI設定 ==========
-openai.api_key = st.secrets["OPENAI_API_KEY"]
+# ========== OpenAI 非同期クライアント設定 ==========
+client = AsyncOpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 async def call_openai_vision_async(base64_images, text_context, default_month_id):
     image_parts = [{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}} for b64 in base64_images]
@@ -72,7 +72,7 @@ async def call_openai_vision_async(base64_images, text_context, default_month_id
         ]}
     ]
 
-    response = await openai.chat.completions.create(
+    response = await client.chat.completions.create(
         model="gpt-4o",
         messages=messages,
         temperature=0.0,
@@ -182,7 +182,6 @@ def export_excel(all_data, property_name):
     start_month = months[0].replace("-", "年") + "月"
     end_month = months[-1].replace("-", "年") + "月"
     ws["B2"] = f"{property_name} 入居管理表 （{start_month}〜{end_month}）"
-    #ws["B2"] = f"{property_name} 入居管理表"
     ws["B2"].font = Font(size=14, bold=True)
     ws["B2"].alignment = center
 
@@ -273,7 +272,6 @@ def export_excel(all_data, property_name):
     out_file = io.BytesIO()
     wb.save(out_file)
     return out_file.getvalue(), start_month, end_month
-
 
 # ========== Streamlit UI ==========
 st.set_page_config(page_title="入居管理表アプリ", layout="wide")
