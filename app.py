@@ -133,18 +133,9 @@ async def handle_file(file, max_attempts=3):
                 return file_name, None
 
 # ========== 全ファイル並列処理 ==========
-async def process_files(files, progress_callback=None):
-    total = len(files)
-    completed = 0
-
-    results = []
-    for file in files:
-        result = await handle_file(file)
-        results.append(result)
-        completed += 1
-        if progress_callback:
-            progress_callback(completed, total, file.name)
-
+async def process_files(files):
+    tasks = [handle_file(file) for file in files]
+    results = await asyncio.gather(*tasks)
     all_data = {}
     for result in results:
         if isinstance(result, tuple):  # (filename, None)
@@ -299,20 +290,10 @@ if uploaded_files and st.button("Excelファイルを生成"):
     if len(uploaded_files) > 12:
         st.warning("アップロードできるのは最大12ファイルまでです。")
     else:
-        status_text = st.empty()
-        progress_bar = st.progress(0)
-
-        def update_progress(completed, total, filename):
-            percent = int(completed / total * 100)
-            progress_bar.progress(percent)
-            status_text.text(f"処理中: {filename} ({completed}/{total})")
-
-        st.info("OpenAI Vision APIで並列処理中...")
-        all_data = asyncio.run(process_files(uploaded_files, progress_callback=update_progress))
-
-        progress_bar.progress(100)
-        status_text.text("全ファイルの処理が完了しました。")
-
+        st.info("収支報告書を読み取り中...")
+        all_data = asyncio.run(process_files(uploaded_files))
+        st.info("入居管理表を作成中...")
         excel_data, start_month, end_month = export_excel(all_data, property_name)
         filename = f"{property_name}_入居管理表（{start_month}〜{end_month}）_{datetime.now().strftime('%Y-%m-%d_%H%M')}.xlsx"
-        st.download_button("Excelをダウンロード", data=excel_data, file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        st.download_button("入居管理表をダウンロード", data=excel_data, file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
