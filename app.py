@@ -160,26 +160,6 @@ async def process_files(files, progress_callback=None):
                 all_data[room_id]["monthly"].update(info.get("monthly", {}))
     return all_data
 
-'''
-async def process_files(files):
-    tasks = [handle_file(file) for file in files]
-    results = await asyncio.gather(*tasks)
-    all_data = {}
-    for result in results:
-        if isinstance(result, tuple):  # (filename, None)
-            st.warning(f"{result[0]} の出力がJSONとして解釈できませんでした。")
-            continue
-        for room_id, info in result.items():
-            if room_id not in all_data:
-                all_data[room_id] = info
-            else:
-                for key in ["name", "reikin", "shikikin", "koushinryo"]:
-                    if info.get(key):
-                        all_data[room_id][key] = info[key]
-                all_data[room_id]["monthly"].update(info.get("monthly", {}))
-    return all_data
-'''
-
 # ========== Excel生成 ==========
 def combine_bikou(info):
     bikou_set = set()
@@ -336,15 +316,3 @@ if uploaded_files and st.button("Excelファイルを生成"):
         excel_data, start_month, end_month = export_excel(all_data, property_name)
         filename = f"{property_name}_入居管理表（{start_month}〜{end_month}）_{datetime.now().strftime('%Y-%m-%d_%H%M')}.xlsx"
         st.download_button("Excelをダウンロード", data=excel_data, file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-'''
-if uploaded_files and st.button("Excelファイルを生成"):
-    if len(uploaded_files) > 12:
-        st.warning("アップロードできるのは最大12ファイルまでです。")
-    else:
-        st.info("OpenAI Vision APIで並列処理中...")
-        all_data = asyncio.run(process_files(uploaded_files))
-        excel_data, start_month, end_month = export_excel(all_data, property_name)
-        filename = f"{property_name}_入居管理表（{start_month}〜{end_month}）_{datetime.now().strftime('%Y-%m-%d_%H%M')}.xlsx"
-        st.download_button("Excelをダウンロード", data=excel_data, file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-'''
