@@ -1,0 +1,7 @@
+[server]
+# inotify を使わない（エラー回避・本番も安定）
+fileWatcherType = "none"
+
+# ローカル用の自動再実行を無効（クラウドでは無視されるが一応）
+runOnSave = false
+
