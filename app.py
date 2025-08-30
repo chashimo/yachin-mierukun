@@ -338,14 +338,18 @@ def combine_bikou_contract(rec):
         if b: s.add(b)
     return ", ".join(sorted(s))
 
+
 def export_excel(records, months, property_name):
     wb = Workbook()
     ws = wb.active
-    sheet_title = property_name or "入居管理表"
-    ws.title = sheet_title
+    ws.title = property_name or "入居管理表"
 
-    num_months = len(months)
-    # ---- style ----
+    # ---- 定数・スタイル ----
+    header_row = 6           # ヘッダ行（=表の左上は B6）
+    data_start_row = 7       # データ開始行
+    last_fixed_col = 3       # C列まで固定 → freeze_panes="D7" で列＆行を同時固定
+    number_fmt  = "#,##0"
+
     header_fill = PatternFill("solid", fgColor="BDD7EE")
     green_fill  = PatternFill("solid", fgColor="CCFFCC")
     gray_fill   = PatternFill("solid", fgColor="DDDDDD")
@@ -353,191 +357,232 @@ def export_excel(records, months, property_name):
     center_vert = Alignment(vertical="center", wrap_text=True)
     bold_font   = Font(bold=True)
     red_font    = Font(color="9C0000")
-    number_fmt  = "#,##0"
     thin_border = Border(*[Side(style='thin')] * 4)
 
-    # ---- タイトル & 見出し ----
-    # B2: タイトル（B2:W2 程度に結合 / 月数で幅を合わせる）
-    last_col_idx = 23  # W=23 （見本と合わせるため固定気味に）
-    ws.merge_cells(start_row=2, start_column=2, end_row=2, end_column=last_col_idx)
+    num_months = len(months)
+    # 列インデックス
+    col_B = 2
+    col_C = 3
+    col_D = 4
+    col_E = 5
+    col_F = 6
+    col_G = 7
+    col_month_end = 6 + num_months        # G..(6+num_months)
+    col_S = col_month_end + 1             # 合計
+    col_T = col_month_end + 2             # 期末 未収/前受
+    col_U = col_month_end + 3             # 礼金・更新料
+    col_V = col_month_end + 4             # 敷金
+    col_W = col_month_end + 5             # 備考
+    col_X = col_W + 1                     # 備考の一つ右（確認用の欄）
+
+    # ---- タイトル & 物件名 ----
+    # B2：タイトル（物件名は入れない）
+    ws.merge_cells(start_row=2, start_column=col_B, end_row=2, end_column=col_W)
     if months:
         start_month = months[0].replace("-", "年") + "月"
         end_month   = months[-1].replace("-", "年") + "月"
-        ws["B2"] = f"{sheet_title} 入居管理表 （{start_month}〜{end_month}）"
+        ws.cell(row=2, column=col_B, value=f"入居管理表 （{start_month}〜{end_month}）")
     else:
-        ws["B2"] = f"{sheet_title} 入居管理表"
-    ws["B2"].font = Font(size=14, bold=True)
-    ws["B2"].alignment = center
+        ws.cell(row=2, column=col_B, value="入居管理表")
+    ws.cell(row=2, column=col_B).font = Font(size=14, bold=True)
+    ws.cell(row=2, column=col_B).alignment = center
 
-    # 行5：大見出し
-    ws.merge_cells("B5:C5"); ws["B5"] = "賃借人"
-    ws.merge_cells("D5:E5"); ws["D5"] = "基準額"
-    ws["F5"] = "期首\n未収/前受"
-    # 月見出し
+    # B4:C4 = 物件名, D4:F4 = 物件名の値
+    ws.merge_cells(start_row=4, start_column=col_B, end_row=4, end_column=col_C)
+    ws.cell(row=4, column=col_B, value="物件名").alignment = center
+    ws.merge_cells(start_row=4, start_column=col_D, end_row=4, end_column=col_F)
+    ws.cell(row=4, column=col_D, value=(property_name or "")).alignment = center
+
+    # ---- ヘッダ（B6..）----
+    ws.merge_cells(start_row=header_row, start_column=col_B, end_row=header_row, end_column=col_C)
+    ws.cell(row=header_row, column=col_B, value="賃借人")
+
+    ws.merge_cells(start_row=header_row, start_column=col_D, end_row=header_row, end_column=col_E)
+    ws.cell(row=header_row, column=col_D, value="基準額")
+
+    ws.cell(row=header_row, column=col_F, value="期首\n未収/前受")
+
+    # 月見出し G..（数は動的）
     for i, m in enumerate(months):
         mm = int(m[5:])
-        ws.cell(row=5, column=7+i, value=f"{mm}月")
-    # 右端ラベル
-    labels = ["合計", "期末\n未収/前受", "礼金・更新料", "敷金", "備考"]
-    for i, lab in enumerate(labels):
-        ws.cell(row=5, column=7+num_months+i, value=lab)
+        ws.cell(row=header_row, column=col_G+i, value=f"{mm}月")
 
-    # ヘッダスタイル
-    col_bikou = 7 + num_months + 4
-    for col in range(2, col_bikou + 1):
-        c = ws.cell(row=5, column=col)
-        c.fill = header_fill; c.font = bold_font; c.alignment = center
+    ws.cell(row=header_row, column=col_S, value="合計")
+    ws.cell(row=header_row, column=col_T, value="期末\n未収/前受")
+    ws.cell(row=header_row, column=col_U, value="礼金・更新料")
+    ws.cell(row=header_row, column=col_V, value="敷金")
+    ws.cell(row=header_row, column=col_W, value="備考")
 
-    # ---- データ行（5行ブロック）----
-    row = 6
-    blocks = []  # (start_row, end_row) for later total rows
+    # ヘッダの体裁
+    for c in range(col_B, col_W+1):
+        cc = ws.cell(row=header_row, column=c)
+        cc.fill = header_fill
+        cc.font = bold_font
+        cc.alignment = center
+
+    # ---- データ（5行ブロック）----
+    row = data_start_row
+    blocks = []  # (start_row, end_row) for each 5-row block
     for rec in records:
-        room = rec["room"]
-        tenant = rec["tenant"]
-        base_rent    = rec.get("base_rent",0)
-        base_fee     = rec.get("base_fee",0)
-        base_parking = rec.get("base_parking",0)
-        base_water   = rec.get("base_water",0)
-        shikikin     = rec.get("shikikin",0)
+        room   = rec.get("room","")
+        tenant = rec.get("tenant","")
+        base_r = rec.get("base_rent",0)
+        base_f = rec.get("base_fee",0)
+        base_p = rec.get("base_parking",0)
+        base_w = rec.get("base_water",0)
+        shikikin = rec.get("shikikin",0)
         reikin_koushin_total = sum((mv.get("reikin",0)+mv.get("koushin",0)) for mv in rec.get("monthly",{}).values())
 
-        # 左側ラベル
-        ws.merge_cells(start_row=row,   start_column=2, end_row=row+4, end_column=2) # B:「室番号」
-        ws.cell(row=row, column=2, value="室番号").alignment = Alignment(horizontal="center", vertical="top", wrap_text=True)
-        ws.cell(row=row, column=3, value=room).alignment = center; ws.cell(row=row, column=3).fill = green_fill
-        ws.merge_cells(start_row=row+1, start_column=3, end_row=row+4, end_column=3)
-        ws.cell(row=row+1, column=3, value=tenant).alignment = center
+        # 左側（室番号/賃借人）
+        ws.merge_cells(start_row=row,   start_column=col_B, end_row=row+4, end_column=col_B)
+        ws.cell(row=row, column=col_B, value="室番号").alignment = Alignment(horizontal="center", vertical="top", wrap_text=True)
+        ws.cell(row=row, column=col_C, value=room).alignment = center
+        ws.cell(row=row, column=col_C).fill = green_fill
+        ws.merge_cells(start_row=row+1, start_column=col_C, end_row=row+4, end_column=col_C)
+        ws.cell(row=row+1, column=col_C, value=tenant).alignment = center
 
-        # D 列 科目名
-        labels = ["家賃","共益費　","駐車料","水道料","合計"]
-        for i, lab in enumerate(labels):
-            ws.cell(row=row+i, column=4, value=lab)
+        # 科目（D列）と基準額（E列）
+        subjects = ["家賃","共益費　","駐車料","水道料","合計"]
+        for i, s in enumerate(subjects):
+            ws.cell(row=row+i, column=col_D, value=s)
+        for i, v in enumerate([base_r, base_f, base_p, base_w]):
+            cc = ws.cell(row=row+i, column=col_E, value=v); cc.number_format = number_fmt
+        # E列 合計は式
+        ws.cell(row=row+4, column=col_E, value=f"=SUM(E{row}:E{row+3})").number_format = number_fmt
 
-        # 基準額（E列）
-        base_vals = [base_rent, base_fee, base_parking, base_water]
-        for i, v in enumerate(base_vals):
-            cc = ws.cell(row=row+i, column=5, value=v); cc.number_format = number_fmt
-        # 合計行（E）は =SUM(E: の4行）
-        ws.cell(row=row+4, column=5, value=None).number_format = number_fmt
-        ws.cell(row=row+4, column=5).value = f"=SUM(E{row}:E{row+3})"
-
-        # 期首F列は 0 のまま（必要なら編集可）
+        # 期首（F列）
         for i in range(5):
-            ws.cell(row=row+i, column=6, value=0).number_format = number_fmt
-        ws.cell(row=row+4, column=6).value = f"=SUM(F{row}:F{row+3})"
+            ws.cell(row=row+i, column=col_F, value=0).number_format = number_fmt
+        ws.cell(row=row+4, column=col_F, value=f"=SUM(F{row}:F{row+3})").number_format = number_fmt
 
-        # 月次（G..）
-        rent_sum = fee_sum = park_sum = water_sum = 0
+        # 月次 G..
         for i, m in enumerate(months):
-            mv = rec.get("monthly", {}).get(m, {})
-            vals = [
-                clean_int(mv.get("rent")),
-                clean_int(mv.get("fee")),
-                clean_int(mv.get("parking")),
-                clean_int(mv.get("water")),
-            ]
-            rent_sum  += vals[0]; fee_sum += vals[1]; park_sum += vals[2]; water_sum += vals[3]
+            mv = (rec.get("monthly") or {}).get(m, {})
+            vals = [mv.get("rent",0), mv.get("fee",0), mv.get("parking",0), mv.get("water",0)]
             for r_i, v in enumerate(vals):
-                cc = ws.cell(row=row+r_i, column=7+i, value=v); cc.number_format = number_fmt
-            # 合計行（5行目）は式で
-            ws.cell(row=row+4, column=7+i).number_format = number_fmt
-            ws.cell(row=row+4, column=7+i).value = f"=SUM({get_column_letter(7+i)}{row}:{get_column_letter(7+i)}{row+3})"
+                cc = ws.cell(row=row+r_i, column=col_G+i, value=v)
+                cc.number_format = number_fmt
+            # 月次の「合計」行（5行目）は縦計式
+            ws.cell(row=row+4, column=col_G+i, value=f"=SUM({get_column_letter(col_G+i)}{row}:{get_column_letter(col_G+i)}{row+3})").number_format = number_fmt
 
-        # S列=各行の合計（G..R）
-        col_S = 7 + num_months
+        # 横計 S列
         for r_i in range(5):
-            cell = ws.cell(row=row+r_i, column=col_S); cell.number_format = number_fmt
-            cell.value = f"=SUM({get_column_letter(7)}{row+r_i}:{get_column_letter(6+num_months)}{row+r_i})"
+            ws.cell(row=row+r_i, column=col_S, value=f"=SUM({get_column_letter(col_G)}{row+r_i}:{get_column_letter(col_month_end)}{row+r_i})").number_format = number_fmt
 
-        # T列=期末 未収/前受（0 初期化、合計行は =SUM(T4行)）
-        col_T = col_S + 1
+        # 期末 T列
         for r_i in range(4):
             ws.cell(row=row+r_i, column=col_T, value=0).number_format = number_fmt
-        ws.cell(row=row+4, column=col_T).number_format = number_fmt
-        ws.cell(row=row+4, column=col_T).value = f"=SUM(T{row}:T{row+3})"
+        ws.cell(row=row+4, column=col_T, value=f"=SUM({get_column_letter(col_T)}{row}:{get_column_letter(col_T)}{row+3})").number_format = number_fmt
 
-        # U列=礼金・更新料（5行縦結合）
-        col_U = col_T + 1
+        # U: 礼金・更新料（5行結合）
         ws.merge_cells(start_row=row, start_column=col_U, end_row=row+4, end_column=col_U)
-        cu = ws.cell(row=row, column=col_U, value=reikin_koushin_total)
-        cu.alignment = center_vert; cu.number_format = number_fmt
-
-        # V列=敷金（5行縦結合）
-        col_V = col_U + 1
+        cu = ws.cell(row=row, column=col_U, value=reikin_koushin_total); cu.alignment = center_vert; cu.number_format = number_fmt
+        # V: 敷金（5行結合）
         ws.merge_cells(start_row=row, start_column=col_V, end_row=row+4, end_column=col_V)
-        cv = ws.cell(row=row, column=col_V, value=shikikin)
-        cv.alignment = center_vert; cv.number_format = number_fmt
-
-        # W列=備考（5行縦結合）
-        col_W = col_V + 1
+        cv = ws.cell(row=row, column=col_V, value=shikikin); cv.alignment = center_vert; cv.number_format = number_fmt
+        # W: 備考（5行結合）
         ws.merge_cells(start_row=row, start_column=col_W, end_row=row+4, end_column=col_W)
-        bw = ws.cell(row=row, column=col_W, value=combine_bikou_contract(rec))
-        bw.alignment = center_vert; bw.font = red_font
+        bw = ws.cell(row=row, column=col_W, value=combine_bikou_contract(rec)); bw.alignment = center_vert; bw.font = red_font
 
-        # 罫線・合計行の網掛け
-        for c in range(2, col_W + 1):
+        # 罫線・網掛け（ブロック内）
+        for c in range(col_B, col_W+1):
             for r in range(row, row+5):
                 ws.cell(row=r, column=c).border = thin_border
-        for c in range(2, col_W + 1):
+        for c in range(col_B, col_W+1):
             ws.cell(row=row+4, column=c).fill = gray_fill
 
         blocks.append((row, row+4))
         row += 5
 
-    # ---- 最下段「合計」行群（SUMIF） ----
-    # 見本では「合　　　計」(B列) + 科目縦に4行（家賃/共益費/駐車料/水道料）
-    sum_start = row
-    ws.cell(row=sum_start, column=2, value="合　　　計")
-    ws.cell(row=sum_start, column=4, value="家賃")
-    for i, name in enumerate(["共益費　","駐車料","水道料"], start=1):
-        ws.cell(row=sum_start + i, column=4, value=name)
+    # データ範囲（合計などの式用）
+    first_data_row = data_start_row
+    last_data_row  = row - 1  # データの最終行（ブロック終端）
 
-    # D列の科目名をキーに SUMIF で E..T 列を集計
-    # データ範囲は D{first_data_row}:D{last_data_row} で、first_data_row=6, last_data_row=row-1
-    first_data_row = 6
-    last_data_row  = row - 1
+    # ---- 下段「合計」4行（家賃/共益費/駐車料/水道料） ----
+    sum_start = row
+    # B..C を4行縦結合して「合計」
+    ws.merge_cells(start_row=sum_start, end_row=sum_start+3, start_column=col_B, end_column=col_C)
+    ws.cell(row=sum_start, column=col_B, value="合計").alignment = center
+
+    # 科目名（D列）
+    for i, name in enumerate(["家賃","共益費　","駐車料","水道料"]):
+        ws.cell(row=sum_start+i, column=col_D, value=name)
+
+    # D列の科目名をキーに、E..T を SUMIF で縦集計
     def sumif_range(col_letter):
         return f"{col_letter}${first_data_row}:{col_letter}${last_data_row}"
-
     for i in range(4):
         r = sum_start + i
-        # E..R （月列含む）+ S（横計）+ T（期末）
-        for cidx in range(5, 7+num_months+1+1):  # E(5) .. T
+        for cidx in range(col_E, col_T+1):  # E..T
             col_letter = get_column_letter(cidx)
-            # 科目の見本セル (D列) を参照（例：$D$7 の文字列と一致するものを合計）
-            # ここでは「その行の D セルと同じ科目」を集計
-            ws.cell(row=r, column=cidx).number_format = number_fmt
-            ws.cell(row=r, column=cidx).value = f"=SUMIF($D${first_data_row}:$D${last_data_row},$D${r},{sumif_range(col_letter)})"
+            ws.cell(row=r, column=cidx, value=f"=SUMIF($D${first_data_row}:$D${last_data_row},$D${r},{sumif_range(col_letter)})").number_format = number_fmt
 
-    # U列（礼金・更新料）、V列（敷金）は単純合計
-    col_U = 7 + num_months + 2
-    col_V = col_U + 1
+    # U/V は全データの単純合計（最上段のみ表示、下2〜4行は空欄）
     for cidx in [col_U, col_V]:
         col_letter = get_column_letter(cidx)
-        ws.cell(row=sum_start, column=cidx).number_format = number_fmt
-        ws.cell(row=sum_start, column=cidx).value = f"=SUM({col_letter}{first_data_row}:{col_letter}{last_data_row})"
-        # 下3行（共益費/駐車料/水道料）は空欄にしておく
+        ws.cell(row=sum_start, column=cidx, value=f"=SUM({col_letter}{first_data_row}:{col_letter}{last_data_row})").number_format = number_fmt
         for i in range(1,4):
             ws.cell(row=sum_start+i, column=cidx, value=None)
 
-    # 右端 備考は空欄
+    # 備考列は空欄
     for i in range(4):
-        ws.cell(row=sum_start+i, column=col_V+1, value="")
+        ws.cell(row=sum_start+i, column=col_W, value="")
 
     # 体裁
-    for c in range(2, col_V+1):
+    for c in range(col_B, col_W+1):
         for r in range(sum_start, sum_start+4):
             ws.cell(row=r, column=c).border = thin_border
 
-    # 備考列の幅（最大長に合わせる）
-    ws.column_dimensions[get_column_letter(col_V+1)].width = max(
+    # ---- 最終行「総合計」 ----
+    grand_row = sum_start + 4
+    # 見出し（B..Cは横1行なので結合は任意。合わせて結合しておく）
+    ws.merge_cells(start_row=grand_row, end_row=grand_row, start_column=col_B, end_column=col_C)
+    ws.cell(row=grand_row, column=col_B, value="総合計").alignment = center
+    # E..T は上の4行合算（=SUM(同列の合計4行分)）
+    for cidx in range(col_E, col_T+1):
+        col_letter = get_column_letter(cidx)
+        ws.cell(row=grand_row, column=cidx, value=f"=SUM({col_letter}{sum_start}:{col_letter}{sum_start+3})").number_format = number_fmt
+    # U/V も合算
+    for cidx in [col_U, col_V]:
+        col_letter = get_column_letter(cidx)
+        ws.cell(row=grand_row, column=cidx, value=f"=SUM({col_letter}{sum_start}:{col_letter}{sum_start})").number_format = number_fmt  # 上段のみ値が入る
+
+    # 罫線
+    for c in range(col_B, col_W+1):
+        ws.cell(row=grand_row, column=c).border = thin_border
+        ws.cell(row=grand_row, column=c).fill = gray_fill
+
+    # ---- 右外側「確認用」 & 一括チェック式（8）----
+    ws.cell(row=grand_row-1, column=col_X, value="確認用").alignment = center
+    g_letter = get_column_letter(col_G)
+    r_letter = get_column_letter(col_month_end)
+    ws.cell(row=grand_row, column=col_X, value=f"=SUM({g_letter}{first_data_row}:{r_letter}{last_data_row})/2").number_format = number_fmt
+
+    # ---- 2行下の「算式確認」行（9）----
+    check_row = grand_row + 2
+    ws.cell(row=check_row, column=col_E, value="算式確認")
+    for cidx in range(col_F, col_T+1):  # F..T
+        col_letter = get_column_letter(cidx)
+        ws.cell(row=check_row, column=cidx, value=f"=SUM({col_letter}{first_data_row}:{col_letter}{last_data_row})/2").number_format = number_fmt
+
+    # 備考列の幅（可変）
+    ws.column_dimensions[get_column_letter(col_W)].width = max(
         [len(combine_bikou_contract(rec)) for rec in records] + [10]
     ) * 1.6
 
-    # バイト列に保存
-    out_file = io.BytesIO()
-    wb.save(out_file)
-    return out_file.getvalue()
+    # ---- ウィンドウ枠の固定（4,5）----
+    try:
+        ws.freeze_panes = ws.cell(row=data_start_row, column=last_fixed_col+1)  # "D7" 相当
+        # → 左に C まで・上に 6 行目まで固定
+    except Exception:
+        pass  # 固定できなくても実害が出ないように
+
+    # 保存
+    import io
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
 
 # ========== Streamlit UI ==========
 st.set_page_config(page_title="入居管理表アプリ", layout="wide")
