@@ -1,10 +1,11 @@
 # 入居管理表アプリ（改修版）
-# - 西澤様の追加要件＆入居管理表サンプル（v2）準拠
-# - 5行ブロック（家賃/共益費/駐車料/水道料/合計）
-# - Pxx(駐車場)行は備考の(0001)等を見て対象室の駐車料へ自動付替え
-# - 同一室で入退去があれば賃借人ごとにブロックを分ける
-# - Excel は合計欄に SUM, 最下段集計に SUMIF を使用
-# - 礼金・更新料は右端の結合セルに契約単位で合算表示、水道料欄追加
+# - 追加: 科目の「典型額」推定（物件レベル & 契約レベル）
+# - 追加: 科目取り違えの自動入替（保守的ルール：共益費へ戻すのみ）
+# - 既存: 5行ブロック（家賃/共益費/駐車料/水道料/合計）
+# - 既存: Pxx(駐車場)行は備考の(0001)等を見て対象室の駐車料へ自動付替え
+# - 既存: 同一室で入退去があれば賃借人ごとにブロックを分ける
+# - 既存: Excel は合計欄に SUM, 最下段集計に SUMIF を使用
+# - 既存: 物件名B4:C4 / 値D4:F4, タイトル B2, 表開始 B6, D7でウィンドウ固定 等
 
 import streamlit as st
 import io
@@ -250,9 +251,9 @@ def fold_parking_Pxx(all_recs):
         # 付替え先
         target_room = rec.get("linked_room") or ""
         if not target_room:
-            # 備考から (dddd) を拾う fallback
+            # 備考から (dddd) を拾う fallback（全角カッコも許容）
             for mk, mv in rec.get("monthly", {}).items():
-                m = re.search(r"（?(\d{3,4})）?", mv.get("bikou",""))
+                m = re.search(r"[（(](\d{3,4})[）)]", mv.get("bikou",""))
                 if m:
                     target_room = m.group(1).zfill(4)
                     break
@@ -276,7 +277,7 @@ def fold_parking_Pxx(all_recs):
         for mk, mv in rec.get("monthly", {}).items():
             dst = target["monthly"].setdefault(mk, {"rent":0,"fee":0,"parking":0,"water":0,"reikin":0,"koushin":0,"bikou":""})
             dst["parking"] += clean_int(mv.get("parking"))
-            # 備考に「(P01→0001付替)」をメモ（任意）
+            # 備考メモ
             note = f"駐車場({room})→{target_room}"
             if note not in (dst["bikou"] or ""):
                 dst["bikou"] = (dst["bikou"] + ", " if dst["bikou"] else "") + note
@@ -286,6 +287,100 @@ def fold_parking_Pxx(all_recs):
     for key in to_delete:
         all_recs.pop(key, None)
 
+# ========== 典型額推定（mode） & 保守的な自動入替 ==========
+def _mode_int_nonzero(values):
+    """非ゼロ整数の最頻値（同点は値の小さい方を採用）。存在しなければ 0。"""
+    counts = {}
+    for v in values:
+        vv = clean_int(v)
+        if vv > 0:
+            counts[vv] = counts.get(vv, 0) + 1
+    if not counts:
+        return 0
+    # 頻度降順・金額昇順で最頻値を決定
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+
+def compute_property_typicals(all_recs):
+    vals = {"fee":[], "parking":[], "water":[]}
+    for rec in all_recs.values():
+        for mv in (rec.get("monthly") or {}).values():
+            vals["fee"].append(mv.get("fee",0))
+            vals["parking"].append(mv.get("parking",0))
+            vals["water"].append(mv.get("water",0))
+    ty = {k: _mode_int_nonzero(v) for k, v in vals.items()}
+    logger.info(f"[典型額(物件)] fee={ty['fee']} parking={ty['parking']} water={ty['water']}")
+    return ty
+
+def compute_record_typicals(rec):
+    vals = {"fee":[], "parking":[], "water":[]}
+    for mv in (rec.get("monthly") or {}).values():
+        vals["fee"].append(mv.get("fee",0))
+        vals["parking"].append(mv.get("parking",0))
+        vals["water"].append(mv.get("water",0))
+    ty = {k: _mode_int_nonzero(v) for k, v in vals.items()}
+    return ty
+
+def _append_auto_note(mv, text):
+    """備考に自動補正メモを追記（重複回避）。"""
+    b = (mv.get("bikou") or "").strip()
+    if text not in b:
+        mv["bikou"] = (b + ", " if b else "") + text
+
+def auto_reclassify_conservatively_to_fee(all_recs):
+    """
+    保守的な取り違え修正：
+    - 共益費=0 で、駐車料または水道料が「共益費の典型額」に一致
+    - かつ その科目側の典型額とは一致しない（≒本来値でない）
+    の場合のみ、その値を共益費へ移す。
+    """
+    prop_ty = compute_property_typicals(all_recs)
+
+    # 典型額の衝突がある（例: fee==water）場合は、混同を避けるため共益費への入替を抑制
+    distinct_fee = prop_ty["fee"] > 0 \
+        and prop_ty["fee"] != prop_ty["parking"] \
+        and prop_ty["fee"] != prop_ty["water"]
+
+    total_swaps = 0
+    for key, rec in all_recs.items():
+        rec_ty = compute_record_typicals(rec)
+        expected_fee = rec_ty["fee"] if rec_ty["fee"] > 0 else prop_ty["fee"]
+
+        if not expected_fee or not distinct_fee:
+            continue  # 期待額が未確定、または衝突時は安全側
+
+        for mk, mv in (rec.get("monthly") or {}).items():
+            f = clean_int(mv.get("fee",0))
+            p = clean_int(mv.get("parking",0))
+            w = clean_int(mv.get("water",0))
+            if f != 0:
+                continue  # 共益費が入っていれば手を触れない
+
+            # それぞれの“本来の典型額”と一致しているなら移動しない（=正当な可能性）
+            looks_like_parking = (p == prop_ty["parking"] or p == rec_ty["parking"]) and p > 0
+            looks_like_water   = (w == prop_ty["water"]   or w == rec_ty["water"])   and w > 0
+
+            cand_from_p = (p == expected_fee) and not looks_like_parking
+            cand_from_w = (w == expected_fee) and not looks_like_water
+
+            # どちらか片方だけ一致したときだけ移動（両方一致・どちらも不一致はスキップ）
+            if cand_from_p ^ cand_from_w:
+                if cand_from_p:
+                    mv["fee"] = expected_fee
+                    mv["parking"] = 0
+                    _append_auto_note(mv, "※自動補正: 駐車料→共益費")
+                    total_swaps += 1
+                    logger.info(f"[AUTO] swap parking→fee @ {rec['room']} {rec['tenant']} {mk}: {expected_fee}")
+                elif cand_from_w:
+                    mv["fee"] = expected_fee
+                    mv["water"] = 0
+                    _append_auto_note(mv, "※自動補正: 水道料→共益費")
+                    total_swaps += 1
+                    logger.info(f"[AUTO] swap water→fee @ {rec['room']} {rec['tenant']} {mk}: {expected_fee}")
+            # それ以外は何もしない
+
+    logger.info(f"[自動入替(保守的)] 実施件数: {total_swaps}")
+
+# ========== 集約パイプライン ==========
 async def process_files(files):
     tasks = [handle_file(file) for file in files]
     results = await asyncio.gather(*tasks)
@@ -298,11 +393,13 @@ async def process_files(files):
     # 2) Pxx 付替え
     fold_parking_Pxx(all_recs)
 
-    # 3) 出力用に並べ替え & 基準額付与
-    #    -> list[record] へ
+    # 3) 科目誤分類の自動補正（保守的：共益費へ戻すのみ）
+    auto_reclassify_conservatively_to_fee(all_recs)
+
+    # 4) 出力用に並べ替え & 基準額付与
     out = []
     for (room, tenant), rec in all_recs.items():
-        # 基準額は各科目の月次最大
+        # 基準額は各科目の月次最大（補正後）
         def max_of(k):
             return max([clean_int(v.get(k,0)) for v in rec["monthly"].values()] or [0])
 
@@ -315,11 +412,10 @@ async def process_files(files):
     # 室番号数値→名前→月最小 でソート
     def room_sort_key(r):
         rm = r["room"]
-        num = 9999
         if rm.upper().startswith("P"):
             num = 9000 + int(re.sub(r"\D","",rm) or 0)  # 駐車は末尾に
         else:
-            num = int(re.sub(r"\D","",rm) or 0)
+            num = int(re.sub(r"\D","",rm) or 0) if re.sub(r"\D","",rm) else 9999
         first_month = sorted(r["monthly"].keys())[0] if r["monthly"] else "9999-99"
         return (num, r["tenant"] or "~", first_month)
 
@@ -376,7 +472,6 @@ def export_excel(records, months, property_name):
     col_X = col_W + 1                     # 備考の一つ右（確認用の欄）
 
     # ---- タイトル & 物件名 ----
-    # B2：タイトル（物件名は入れない）
     ws.merge_cells(start_row=2, start_column=col_B, end_row=2, end_column=col_W)
     if months:
         start_month = months[0].replace("-", "年") + "月"
@@ -535,30 +630,26 @@ def export_excel(records, months, property_name):
 
     # ---- 最終行「総合計」 ----
     grand_row = sum_start + 4
-    # 見出し（B..Cは横1行なので結合は任意。合わせて結合しておく）
     ws.merge_cells(start_row=grand_row, end_row=grand_row, start_column=col_B, end_column=col_C)
     ws.cell(row=grand_row, column=col_B, value="総合計").alignment = center
-    # E..T は上の4行合算（=SUM(同列の合計4行分)）
     for cidx in range(col_E, col_T+1):
         col_letter = get_column_letter(cidx)
         ws.cell(row=grand_row, column=cidx, value=f"=SUM({col_letter}{sum_start}:{col_letter}{sum_start+3})").number_format = number_fmt
-    # U/V も合算
     for cidx in [col_U, col_V]:
         col_letter = get_column_letter(cidx)
-        ws.cell(row=grand_row, column=cidx, value=f"=SUM({col_letter}{sum_start}:{col_letter}{sum_start})").number_format = number_fmt  # 上段のみ値が入る
+        ws.cell(row=grand_row, column=cidx, value=f"=SUM({col_letter}{sum_start}:{col_letter}{sum_start})").number_format = number_fmt  # 上段のみ値
 
-    # 罫線
     for c in range(col_B, col_W+1):
         ws.cell(row=grand_row, column=c).border = thin_border
         ws.cell(row=grand_row, column=c).fill = gray_fill
 
-    # ---- 右外側「確認用」 & 一括チェック式（8）----
+    # ---- 右外側「確認用」 & 一括チェック式 ----
     ws.cell(row=grand_row-1, column=col_X, value="確認用").alignment = center
     g_letter = get_column_letter(col_G)
     r_letter = get_column_letter(col_month_end)
     ws.cell(row=grand_row, column=col_X, value=f"=SUM({g_letter}{first_data_row}:{r_letter}{last_data_row})/2").number_format = number_fmt
 
-    # ---- 2行下の「算式確認」行（9）----
+    # ---- 2行下の「算式確認」行 ----
     check_row = grand_row + 2
     ws.cell(row=check_row, column=col_E, value="算式確認")
     for cidx in range(col_F, col_T+1):  # F..T
@@ -570,15 +661,12 @@ def export_excel(records, months, property_name):
         [len(combine_bikou_contract(rec)) for rec in records] + [10]
     ) * 1.6
 
-    # ---- ウィンドウ枠の固定（4,5）----
+    # ---- ウィンドウ枠の固定 ----
     try:
         ws.freeze_panes = ws.cell(row=data_start_row, column=last_fixed_col+1)  # "D7" 相当
-        # → 左に C まで・上に 6 行目まで固定
     except Exception:
-        pass  # 固定できなくても実害が出ないように
+        pass
 
-    # 保存
-    import io
     out = io.BytesIO()
     wb.save(out)
     return out.getvalue()
