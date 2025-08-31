@@ -1,10 +1,7 @@
-# 入居管理表アプリ（改修版）
-# - 西澤様の追加要件＆入居管理表サンプル（v2）準拠
-# - 5行ブロック（家賃/共益費/駐車料/水道料/合計）
-# - Pxx(駐車場)行は備考の(0001)等を見て対象室の駐車料へ自動付替え
-# - 同一室で入退去があれば賃借人ごとにブロックを分ける
-# - Excel は合計欄に SUM, 最下段集計に SUMIF を使用
-# - 礼金・更新料は右端の結合セルに契約単位で合算表示、水道料欄追加
+# 入居管理表アプリ（text_context絞り込み版）
+# - 画像(OCR) + PDFテキストを使い、JSON構造を抽出
+# - 今回の変更点は「text_context の絞り込み」のみ
+# - プロンプト強化や抽出後のオートコレクトは未適用
 
 import streamlit as st
 import io
@@ -73,7 +70,7 @@ async def call_openai_vision_async(base64_images, text_context, default_month_id
         {"role": "user", "content": [
             *image_parts,
             {"type": "text", "text":
-                f"【OCR補助テキスト】\n{text_context}\n\n"
+                f"【OCR補助テキスト（抽出済み重要行のみ）】\n{text_context}\n\n"
                 f"このPDFには {default_month_id} 付近の月が含まれる可能性があります。"
                 f"表内に現れた全ての『年／月』を抽出してください。\n\n"
                 "※ 出力は純粋な JSON オブジェクトのみ。"}
@@ -102,12 +99,93 @@ def convert_image_to_base64(image):
     image.save(buf, format="JPEG", quality=90)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
-def extract_text_with_pdfplumber(pdf_bytes):
+# ---- (変更点) PDFテキスト抽出 + 重要行だけを残すフィルタ ----
+_Z2H_MAP = str.maketrans({
+    "０":"0","１":"1","２":"2","３":"3","４":"4","５":"5","６":"6","７":"7","８":"8","９":"9",
+    "，":",","．":".","（":"(","）":")","Ｐ":"P","　":" ","：":":","－":"-","＋":"+","％":"%"
+})
+
+# 科目や金額・月・室番号・Pxx・(0001) 等に関わる行だけを残す
+_KEEP_PATTERNS = [
+    r"家\s*賃",                                  # 家賃
+    r"共\s*益\s*費|共益費|供益費|共栄費|管理費",     # 共益費の誤読も拾う
+    r"駐\s*車\s*料|\bP\d{1,2}\b",                  # 駐車料 / P01 など
+    r"水\s*道\s*料|上下水道|下水|水道",             # 水道料
+    r"礼金|更新料|敷金",                           # 右端の契約単位金額
+    r"備考|摘要|特記事項",                         # 備考
+    r"期首|期末|未収|前受",                        # 期首/期末 未収・前受
+    r"合計|総計",                                  # 合計
+    r"\d{4}\s*年\s*\d{1,2}\s*月|\b\d{1,2}\s*月\b",  # 月の表記
+    r"[（(]\d{3,4}[)）]",                          # （0001）など
+    r"\b\d{3,4}\b",                                # 0001/0101 などの室番号
+    r"[0-9][0-9,]{2,}"                             # 桁区切りの金額らしきもの
+]
+_KEEP_RE = re.compile("|".join(_KEEP_PATTERNS), re.IGNORECASE)
+
+def _normalize_line(s: str) -> str:
+    s = s.translate(_Z2H_MAP)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+def extract_text_with_pdfplumber_raw(pdf_bytes) -> str:
     texts = []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page in pdf.pages:
-            texts.append(page.extract_text() or "")
+            t = page.extract_text(x_tolerance=2, y_tolerance=2) or ""
+            texts.append(t)
     return "\n".join(texts)
+
+def filter_text_context(raw_text: str, default_month_id: str) -> str:
+    # 前処理（全行 正規化）
+    lines = [_normalize_line(l) for l in raw_text.splitlines() if l.strip()]
+    if not lines:
+        return ""
+
+    # 重要行にヒットする行 + 前後1行 だけ残す
+    keep_idx = set()
+    for i, line in enumerate(lines):
+        if _KEEP_RE.search(line):
+            keep_idx.add(i)
+            if i > 0: keep_idx.add(i - 1)
+            if i + 1 < len(lines): keep_idx.add(i + 1)
+
+    kept = [lines[i] for i in sorted(keep_idx)]
+
+    # デフォルト月（ファイル名から推定）があれば、該当月表記を優先的に残す（安全のため既に含まれる）
+    if default_month_id and re.match(r"\d{4}-\d{2}", default_month_id):
+        y, m = default_month_id.split("-")
+        m_line = f"{int(m)}月"
+        extra = [l for l in lines if (f"{y}年{int(m)}月" in l or m_line in l)]
+        kept.extend(extra)
+
+    # 重複除去
+    seen = set()
+    deduped = []
+    for l in kept:
+        if l not in seen:
+            deduped.append(l)
+            seen.add(l)
+
+    # 行数があまりに少ない（<10行 or 400文字未満）なら、情報不足と判断して raw にフォールバック
+    if len(deduped) < 10 or sum(len(x) for x in deduped) < 400:
+        logger.info("text_context が少なすぎるため raw にフォールバックします")
+        out = raw_text
+    else:
+        out = "\n".join(deduped)
+
+    # モデルに渡すテキストが長すぎる場合は安全にトリミング（末尾優先で残す）
+    MAX_CHARS = 12000  # モデルのコンテキストを圧迫しない程度
+    if len(out) > MAX_CHARS:
+        out = out[-MAX_CHARS:]
+
+    logger.info(f"text_context: {len(deduped)} 行 / raw {len(lines)} 行（最終 {len(out)} 文字）")
+    return out
+
+def extract_text_with_pdfplumber(pdf_bytes) -> str:
+    """後方互換のためのラッパ（上位からはこれを呼ぶ）"""
+    raw = extract_text_with_pdfplumber_raw(pdf_bytes)
+    # 上位で default_month_id を渡すため、ここでは素の raw を返す
+    return raw
 
 def extract_month_from_filename(filename: str) -> str:
     m = re.search(r"(\d{4})年(\d{1,2})月", filename)
@@ -121,7 +199,6 @@ def normalize_room(s: str) -> str:
     if re.fullmatch(r"P\d{1,2}", s, re.IGNORECASE):
         p = s.upper().replace("P", "")
         return f"P{p.zfill(2)}"
-    # 数字系は4桁ゼロパディング
     digits = re.sub(r"\D", "", s)
     if digits:
         return digits.zfill(4)
@@ -148,14 +225,17 @@ async def handle_file(file, max_attempts=3):
     file_bytes = file.read()
     images = convert_pdf_to_images(file_bytes)
     b64s = [convert_image_to_base64(img) for img in images]
-    text_context = extract_text_with_pdfplumber(file_bytes)
+
+    # --- ここが今回の変更点 ---
+    raw_text = extract_text_with_pdfplumber(file_bytes)
+    text_context = filter_text_context(raw_text, default_month_id)
+    # --------------------------
 
     last_err = None
     for attempt in range(1, max_attempts + 1):
         try:
             raw = await call_openai_vision_async(b64s, text_context, default_month_id)
             s = raw.strip()
-            # コードフェンスの除去
             s = s.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
             obj = json.loads(s)
             if not isinstance(obj, dict) or "records" not in obj or not isinstance(obj["records"], list):
@@ -194,12 +274,6 @@ async def handle_file(file, max_attempts=3):
 
 # ========== 全ファイル並列処理 & マージ ==========
 def merge_records(all_recs, new_recs):
-    """
-    all_recs: dict[ (room, tenant) ] -> record
-      record = {
-        room, tenant, monthly: { 'YYYY-MM': {...} }, shikikin, linked_room
-      }
-    """
     for r in new_recs:
         key = (r["room"], r["tenant"])
         if key not in all_recs:
@@ -210,7 +284,6 @@ def merge_records(all_recs, new_recs):
                 "shikikin": clean_int(r.get("shikikin", 0)),
                 "linked_room": r.get("linked_room", ""),
             }
-        # 敷金は最大（または和でもよいが、ここは最大値採用）
         all_recs[key]["shikikin"] = max(all_recs[key]["shikikin"], clean_int(r.get("shikikin", 0)))
         for mk, mv in (r.get("monthly") or {}).items():
             dst = all_recs[key]["monthly"].setdefault(mk, {
@@ -224,7 +297,6 @@ def merge_records(all_recs, new_recs):
             dst["koushin"] += clean_int(mv.get("koushin"))
             b = str(mv.get("bikou") or "").strip()
             if b:
-                # 既存備考に重複追加しない簡易処理
                 if dst["bikou"]:
                     if b not in dst["bikou"]:
                         dst["bikou"] += f", {b}"
@@ -232,13 +304,7 @@ def merge_records(all_recs, new_recs):
                     dst["bikou"] = b
 
 def fold_parking_Pxx(all_recs):
-    """
-    Pxx レコードを、linked_room に駐車料として付替える。
-    付替え先キーは (linked_room, tenant='') が見つからない場合は
-    同室の誰かのレコード（賃借人がいるもの）にまとめる（最初に見つかったもの）。
-    """
     to_delete = []
-    # 検索用: room -> keys(list)
     by_room = {}
     for key, rec in all_recs.items():
         by_room.setdefault(rec["room"], []).append(key)
@@ -247,36 +313,29 @@ def fold_parking_Pxx(all_recs):
         room = rec["room"]
         if not room.upper().startswith("P"):
             continue
-        # 付替え先
         target_room = rec.get("linked_room") or ""
         if not target_room:
-            # 備考から (dddd) を拾う fallback
             for mk, mv in rec.get("monthly", {}).items():
                 m = re.search(r"（?(\d{3,4})）?", mv.get("bikou",""))
                 if m:
                     target_room = m.group(1).zfill(4)
                     break
         if not target_room:
-            # 付替え不能なら残す（稀ケース）
             logger.info(f"Pxx行 {key} は付替え先不明のため残存")
             continue
 
-        # 候補キー
         target_keys = by_room.get(target_room, [])
         if not target_keys:
-            # まだ同室のレコードがない場合、空テナントのレコードを新設
             tkey = (target_room, "")
             all_recs[tkey] = {"room": target_room, "tenant":"", "monthly": {}, "shikikin":0, "linked_room":""}
             by_room.setdefault(target_room, []).append(tkey)
             target_keys = [tkey]
 
-        # 付替えは最初の候補へ
         tkey = target_keys[0]
         target = all_recs[tkey]
         for mk, mv in rec.get("monthly", {}).items():
             dst = target["monthly"].setdefault(mk, {"rent":0,"fee":0,"parking":0,"water":0,"reikin":0,"koushin":0,"bikou":""})
             dst["parking"] += clean_int(mv.get("parking"))
-            # 備考に「(P01→0001付替)」をメモ（任意）
             note = f"駐車場({room})→{target_room}"
             if note not in (dst["bikou"] or ""):
                 dst["bikou"] = (dst["bikou"] + ", " if dst["bikou"] else "") + note
@@ -291,65 +350,53 @@ async def process_files(files):
     results = await asyncio.gather(*tasks)
 
     # 1) マージ
-    all_recs = {}  # key = (room, tenant)
+    all_recs = {}
     for recs in results:
         merge_records(all_recs, recs)
 
     # 2) Pxx 付替え
     fold_parking_Pxx(all_recs)
 
-    # 3) 出力用に並べ替え & 基準額付与
-    #    -> list[record] へ
+    # 3) 出力用配列 + 基準額
     out = []
     for (room, tenant), rec in all_recs.items():
-        # 基準額は各科目の月次最大
         def max_of(k):
             return max([clean_int(v.get(k,0)) for v in rec["monthly"].values()] or [0])
-
         rec["base_rent"]    = max_of("rent")
         rec["base_fee"]     = max_of("fee")
         rec["base_parking"] = max_of("parking")
         rec["base_water"]   = max_of("water")
         out.append(rec)
 
-    # 室番号数値→名前→月最小 でソート
     def room_sort_key(r):
         rm = r["room"]
-        num = 9999
         if rm.upper().startswith("P"):
-            num = 9000 + int(re.sub(r"\D","",rm) or 0)  # 駐車は末尾に
+            num = 9000 + int(re.sub(r"\D","",rm) or 0)
         else:
             num = int(re.sub(r"\D","",rm) or 0)
         first_month = sorted(r["monthly"].keys())[0] if r["monthly"] else "9999-99"
         return (num, r["tenant"] or "~", first_month)
 
     out_sorted = sorted(out, key=room_sort_key)
-
-    # 月リスト（全レコードのユニーク月）
     months = sorted({m for r in out_sorted for m in r["monthly"].keys()})
     return out_sorted, months
 
-# ========== Excel 生成（サンプル準拠） ==========
+# ========== Excel 生成 ==========
 def combine_bikou_contract(rec):
-    """契約全体の備考集合（ユニーク）"""
     s = set()
     for mv in rec.get("monthly", {}).values():
         b = (mv.get("bikou") or "").strip()
         if b: s.add(b)
     return ", ".join(sorted(s))
 
-
 def export_excel(records, months, property_name):
     wb = Workbook()
     ws = wb.active
     ws.title = property_name or "入居管理表"
 
-    # ---- 定数・スタイル ----
-    header_row = 6           # ヘッダ行（=表の左上は B6）
-    data_start_row = 7       # データ開始行
-    last_fixed_col = 3       # C列まで固定 → freeze_panes="D7" で列＆行を同時固定
-    number_fmt  = "#,##0"
+    num_months = len(months)
 
+    # ---- style ----
     header_fill = PatternFill("solid", fgColor="BDD7EE")
     green_fill  = PatternFill("solid", fgColor="CCFFCC")
     gray_fill   = PatternFill("solid", fgColor="DDDDDD")
@@ -357,236 +404,188 @@ def export_excel(records, months, property_name):
     center_vert = Alignment(vertical="center", wrap_text=True)
     bold_font   = Font(bold=True)
     red_font    = Font(color="9C0000")
+    number_fmt  = "#,##0"
     thin_border = Border(*[Side(style='thin')] * 4)
 
-    num_months = len(months)
-    # 列インデックス
-    col_B = 2
-    col_C = 3
-    col_D = 4
-    col_E = 5
-    col_F = 6
-    col_G = 7
-    col_month_end = 6 + num_months        # G..(6+num_months)
-    col_S = col_month_end + 1             # 合計
-    col_T = col_month_end + 2             # 期末 未収/前受
-    col_U = col_month_end + 3             # 礼金・更新料
-    col_V = col_month_end + 4             # 敷金
-    col_W = col_month_end + 5             # 備考
-    col_X = col_W + 1                     # 備考の一つ右（確認用の欄）
-
-    # ---- タイトル & 物件名 ----
-    # B2：タイトル（物件名は入れない）
-    ws.merge_cells(start_row=2, start_column=col_B, end_row=2, end_column=col_W)
+    # ---- タイトル（B2:W2）物件名（B4/D4）----
+    last_col_idx = 23  # W
+    ws.merge_cells(start_row=2, start_column=2, end_row=2, end_column=last_col_idx)
     if months:
         start_month = months[0].replace("-", "年") + "月"
         end_month   = months[-1].replace("-", "年") + "月"
-        ws.cell(row=2, column=col_B, value=f"入居管理表 （{start_month}〜{end_month}）")
+        ws["B2"] = f"入居管理表 （{start_month}〜{end_month}）"
     else:
-        ws.cell(row=2, column=col_B, value="入居管理表")
-    ws.cell(row=2, column=col_B).font = Font(size=14, bold=True)
-    ws.cell(row=2, column=col_B).alignment = center
+        ws["B2"] = "入居管理表"
+    ws["B2"].font = Font(size=14, bold=True)
+    ws["B2"].alignment = center
 
-    # B4:C4 = 物件名, D4:F4 = 物件名の値
-    ws.merge_cells(start_row=4, start_column=col_B, end_row=4, end_column=col_C)
-    ws.cell(row=4, column=col_B, value="物件名").alignment = center
-    ws.merge_cells(start_row=4, start_column=col_D, end_row=4, end_column=col_F)
-    ws.cell(row=4, column=col_D, value=(property_name or "")).alignment = center
+    # 物件名表示（B4:「物件名」, D4:F4 に物件名）
+    ws.merge_cells("B4:C4"); ws["B4"] = "物件名"; ws["B4"].alignment = center; ws["B4"].font = bold_font
+    ws.merge_cells("D4:F4"); ws["D4"] = property_name or ""; ws["D4"].alignment = Alignment(vertical="center")
 
-    # ---- ヘッダ（B6..）----
-    ws.merge_cells(start_row=header_row, start_column=col_B, end_row=header_row, end_column=col_C)
-    ws.cell(row=header_row, column=col_B, value="賃借人")
-
-    ws.merge_cells(start_row=header_row, start_column=col_D, end_row=header_row, end_column=col_E)
-    ws.cell(row=header_row, column=col_D, value="基準額")
-
-    ws.cell(row=header_row, column=col_F, value="期首\n未収/前受")
-
-    # 月見出し G..（数は動的）
+    # ---- 見出し（行=6）----
+    HDR_ROW = 6
+    ws.merge_cells(start_row=HDR_ROW, start_column=2, end_row=HDR_ROW, end_column=3); ws["B"+str(HDR_ROW)] = "賃借人"
+    ws.merge_cells(start_row=HDR_ROW, start_column=4, end_row=HDR_ROW, end_column=5); ws["D"+str(HDR_ROW)] = "基準額"
+    ws["F"+str(HDR_ROW)] = "期首\n未収/前受"
+    # 月見出し
     for i, m in enumerate(months):
         mm = int(m[5:])
-        ws.cell(row=header_row, column=col_G+i, value=f"{mm}月")
+        ws.cell(row=HDR_ROW, column=7+i, value=f"{mm}月")
+    # 右端ラベル
+    labels = ["合計", "期末\n未収/前受", "礼金・更新料", "敷金", "備考"]
+    for i, lab in enumerate(labels):
+        ws.cell(row=HDR_ROW, column=7+num_months+i, value=lab)
 
-    ws.cell(row=header_row, column=col_S, value="合計")
-    ws.cell(row=header_row, column=col_T, value="期末\n未収/前受")
-    ws.cell(row=header_row, column=col_U, value="礼金・更新料")
-    ws.cell(row=header_row, column=col_V, value="敷金")
-    ws.cell(row=header_row, column=col_W, value="備考")
+    # ヘッダスタイル
+    col_bikou = 7 + num_months + 4
+    for col in range(2, col_bikou + 1):
+        c = ws.cell(row=HDR_ROW, column=col)
+        c.fill = header_fill; c.font = bold_font; c.alignment = center
 
-    # ヘッダの体裁
-    for c in range(col_B, col_W+1):
-        cc = ws.cell(row=header_row, column=c)
-        cc.fill = header_fill
-        cc.font = bold_font
-        cc.alignment = center
-
-    # ---- データ（5行ブロック）----
-    row = data_start_row
-    blocks = []  # (start_row, end_row) for each 5-row block
+    # ---- データ行（5行ブロック）----
+    row = HDR_ROW + 1  # データ開始は 7 行目
+    blocks = []
     for rec in records:
-        room   = rec.get("room","")
-        tenant = rec.get("tenant","")
-        base_r = rec.get("base_rent",0)
-        base_f = rec.get("base_fee",0)
-        base_p = rec.get("base_parking",0)
-        base_w = rec.get("base_water",0)
-        shikikin = rec.get("shikikin",0)
+        room = rec["room"]
+        tenant = rec["tenant"]
+        base_rent    = rec.get("base_rent",0)
+        base_fee     = rec.get("base_fee",0)
+        base_parking = rec.get("base_parking",0)
+        base_water   = rec.get("base_water",0)
+        shikikin     = rec.get("shikikin",0)
         reikin_koushin_total = sum((mv.get("reikin",0)+mv.get("koushin",0)) for mv in rec.get("monthly",{}).values())
 
-        # 左側（室番号/賃借人）
-        ws.merge_cells(start_row=row,   start_column=col_B, end_row=row+4, end_column=col_B)
-        ws.cell(row=row, column=col_B, value="室番号").alignment = Alignment(horizontal="center", vertical="top", wrap_text=True)
-        ws.cell(row=row, column=col_C, value=room).alignment = center
-        ws.cell(row=row, column=col_C).fill = green_fill
-        ws.merge_cells(start_row=row+1, start_column=col_C, end_row=row+4, end_column=col_C)
-        ws.cell(row=row+1, column=col_C, value=tenant).alignment = center
+        # 左側ラベル
+        ws.merge_cells(start_row=row,   start_column=2, end_row=row+4, end_column=2)
+        ws.cell(row=row, column=2, value="室番号").alignment = Alignment(horizontal="center", vertical="top", wrap_text=True)
+        ws.cell(row=row, column=3, value=room).alignment = center; ws.cell(row=row, column=3).fill = green_fill
+        ws.merge_cells(start_row=row+1, start_column=3, end_row=row+4, end_column=3)
+        ws.cell(row=row+1, column=3, value=tenant).alignment = center
 
-        # 科目（D列）と基準額（E列）
-        subjects = ["家賃","共益費　","駐車料","水道料","合計"]
-        for i, s in enumerate(subjects):
-            ws.cell(row=row+i, column=col_D, value=s)
-        for i, v in enumerate([base_r, base_f, base_p, base_w]):
-            cc = ws.cell(row=row+i, column=col_E, value=v); cc.number_format = number_fmt
-        # E列 合計は式
-        ws.cell(row=row+4, column=col_E, value=f"=SUM(E{row}:E{row+3})").number_format = number_fmt
+        # D 列 科目名
+        labels = ["家賃","共益費　","駐車料","水道料","合計"]
+        for i, lab in enumerate(labels):
+            ws.cell(row=row+i, column=4, value=lab)
 
-        # 期首（F列）
-        for i in range(5):
-            ws.cell(row=row+i, column=col_F, value=0).number_format = number_fmt
-        ws.cell(row=row+4, column=col_F, value=f"=SUM(F{row}:F{row+3})").number_format = number_fmt
+        # 基準額（E列）
+        base_vals = [base_rent, base_fee, base_parking, base_water]
+        for i, v in enumerate(base_vals):
+            cc = ws.cell(row=row+i, column=5, value=v); cc.number_format = number_fmt
+        ws.cell(row=row+4, column=5).number_format = number_fmt
+        ws.cell(row=row+4, column=5).value = f"=SUM(E{row}:E{row+3})"
 
-        # 月次 G..
+        # 期首F列は 0 初期化（合計行のみ式）
+        for i in range(4):
+            ws.cell(row=row+i, column=6, value=0).number_format = number_fmt
+        ws.cell(row=row+4, column=6).number_format = number_fmt
+        ws.cell(row=row+4, column=6).value = f"=SUM(F{row}:F{row+3})"
+
+        # 月次（G..）
         for i, m in enumerate(months):
-            mv = (rec.get("monthly") or {}).get(m, {})
-            vals = [mv.get("rent",0), mv.get("fee",0), mv.get("parking",0), mv.get("water",0)]
+            mv = rec.get("monthly", {}).get(m, {})
+            vals = [
+                clean_int(mv.get("rent")),
+                clean_int(mv.get("fee")),
+                clean_int(mv.get("parking")),
+                clean_int(mv.get("water")),
+            ]
             for r_i, v in enumerate(vals):
-                cc = ws.cell(row=row+r_i, column=col_G+i, value=v)
-                cc.number_format = number_fmt
-            # 月次の「合計」行（5行目）は縦計式
-            ws.cell(row=row+4, column=col_G+i, value=f"=SUM({get_column_letter(col_G+i)}{row}:{get_column_letter(col_G+i)}{row+3})").number_format = number_fmt
+                cc = ws.cell(row=row+r_i, column=7+i, value=v); cc.number_format = number_fmt
+            # 合計行（5行目）は式
+            ws.cell(row=row+4, column=7+i).number_format = number_fmt
+            ws.cell(row=row+4, column=7+i).value = f"=SUM({get_column_letter(7+i)}{row}:{get_column_letter(7+i)}{row+3})"
 
-        # 横計 S列
+        # S列=各行の合計（G..R）
+        col_S = 7 + num_months
         for r_i in range(5):
-            ws.cell(row=row+r_i, column=col_S, value=f"=SUM({get_column_letter(col_G)}{row+r_i}:{get_column_letter(col_month_end)}{row+r_i})").number_format = number_fmt
+            cell = ws.cell(row=row+r_i, column=col_S); cell.number_format = number_fmt
+            cell.value = f"=SUM({get_column_letter(7)}{row+r_i}:{get_column_letter(6+num_months)}{row+r_i})"
 
-        # 期末 T列
+        # T列=期末 未収/前受（合計行は =SUM）
+        col_T = col_S + 1
         for r_i in range(4):
             ws.cell(row=row+r_i, column=col_T, value=0).number_format = number_fmt
-        ws.cell(row=row+4, column=col_T, value=f"=SUM({get_column_letter(col_T)}{row}:{get_column_letter(col_T)}{row+3})").number_format = number_fmt
+        ws.cell(row=row+4, column=col_T).number_format = number_fmt
+        ws.cell(row=row+4, column=col_T).value = f"=SUM(T{row}:T{row+3})"
 
-        # U: 礼金・更新料（5行結合）
+        # U列=礼金・更新料（縦結合）
+        col_U = col_T + 1
         ws.merge_cells(start_row=row, start_column=col_U, end_row=row+4, end_column=col_U)
-        cu = ws.cell(row=row, column=col_U, value=reikin_koushin_total); cu.alignment = center_vert; cu.number_format = number_fmt
-        # V: 敷金（5行結合）
-        ws.merge_cells(start_row=row, start_column=col_V, end_row=row+4, end_column=col_V)
-        cv = ws.cell(row=row, column=col_V, value=shikikin); cv.alignment = center_vert; cv.number_format = number_fmt
-        # W: 備考（5行結合）
-        ws.merge_cells(start_row=row, start_column=col_W, end_row=row+4, end_column=col_W)
-        bw = ws.cell(row=row, column=col_W, value=combine_bikou_contract(rec)); bw.alignment = center_vert; bw.font = red_font
+        cu = ws.cell(row=row, column=col_U, value=reikin_koushin_total)
+        cu.alignment = center_vert; cu.number_format = number_fmt
 
-        # 罫線・網掛け（ブロック内）
-        for c in range(col_B, col_W+1):
+        # V列=敷金（縦結合）
+        col_V = col_U + 1
+        ws.merge_cells(start_row=row, start_column=col_V, end_row=row+4, end_column=col_V)
+        cv = ws.cell(row=row, column=col_V, value=shikikin)
+        cv.alignment = center_vert; cv.number_format = number_fmt
+
+        # W列=備考（縦結合）
+        col_W = col_V + 1
+        ws.merge_cells(start_row=row, start_column=col_W, end_row=row+4, end_column=col_W)
+        bw = ws.cell(row=row, column=col_W, value=combine_bikou_contract(rec))
+        bw.alignment = center_vert; bw.font = red_font
+
+        # 罫線・合計行の網掛け
+        for c in range(2, col_W + 1):
             for r in range(row, row+5):
                 ws.cell(row=r, column=c).border = thin_border
-        for c in range(col_B, col_W+1):
+        for c in range(2, col_W + 1):
             ws.cell(row=row+4, column=c).fill = gray_fill
 
         blocks.append((row, row+4))
         row += 5
 
-    # データ範囲（合計などの式用）
-    first_data_row = data_start_row
-    last_data_row  = row - 1  # データの最終行（ブロック終端）
-
-    # ---- 下段「合計」4行（家賃/共益費/駐車料/水道料） ----
+    # ---- 最下段「合計」行群（各科目の SUM）----
     sum_start = row
-    # B..C を4行縦結合して「合計」
-    ws.merge_cells(start_row=sum_start, end_row=sum_start+3, start_column=col_B, end_column=col_C)
-    ws.cell(row=sum_start, column=col_B, value="合計").alignment = center
+    ws.cell(row=sum_start, column=2, value="合　　　計")
+    ws.cell(row=sum_start, column=4, value="家賃")
+    for i, name in enumerate(["共益費　","駐車料","水道料"], start=1):
+        ws.cell(row=sum_start + i, column=4, value=name)
 
-    # 科目名（D列）
-    for i, name in enumerate(["家賃","共益費　","駐車料","水道料"]):
-        ws.cell(row=sum_start+i, column=col_D, value=name)
+    first_data_row = 7
+    last_data_row  = row - 1
 
-    # D列の科目名をキーに、E..T を SUMIF で縦集計
     def sumif_range(col_letter):
         return f"{col_letter}${first_data_row}:{col_letter}${last_data_row}"
+
     for i in range(4):
         r = sum_start + i
-        for cidx in range(col_E, col_T+1):  # E..T
+        for cidx in range(5, 7+num_months+1+1):  # E..T
             col_letter = get_column_letter(cidx)
-            ws.cell(row=r, column=cidx, value=f"=SUMIF($D${first_data_row}:$D${last_data_row},$D${r},{sumif_range(col_letter)})").number_format = number_fmt
+            ws.cell(row=r, column=cidx).number_format = number_fmt
+            ws.cell(row=r, column=cidx).value = (
+                f"=SUMIF($D${first_data_row}:$D${last_data_row},$D${r},{sumif_range(col_letter)})"
+            )
 
-    # U/V は全データの単純合計（最上段のみ表示、下2〜4行は空欄）
+    col_U = 7 + num_months + 2
+    col_V = col_U + 1
     for cidx in [col_U, col_V]:
         col_letter = get_column_letter(cidx)
-        ws.cell(row=sum_start, column=cidx, value=f"=SUM({col_letter}{first_data_row}:{col_letter}{last_data_row})").number_format = number_fmt
+        ws.cell(row=sum_start, column=cidx).number_format = number_fmt
+        ws.cell(row=sum_start, column=cidx).value = f"=SUM({col_letter}{first_data_row}:{col_letter}{last_data_row})"
         for i in range(1,4):
             ws.cell(row=sum_start+i, column=cidx, value=None)
 
-    # 備考列は空欄
     for i in range(4):
-        ws.cell(row=sum_start+i, column=col_W, value="")
+        ws.cell(row=sum_start+i, column=col_V+1, value="")
 
-    # 体裁
-    for c in range(col_B, col_W+1):
+    for c in range(2, col_V+1):
         for r in range(sum_start, sum_start+4):
             ws.cell(row=r, column=c).border = thin_border
 
-    # ---- 最終行「総合計」 ----
-    grand_row = sum_start + 4
-    # 見出し（B..Cは横1行なので結合は任意。合わせて結合しておく）
-    ws.merge_cells(start_row=grand_row, end_row=grand_row, start_column=col_B, end_column=col_C)
-    ws.cell(row=grand_row, column=col_B, value="総合計").alignment = center
-    # E..T は上の4行合算（=SUM(同列の合計4行分)）
-    for cidx in range(col_E, col_T+1):
-        col_letter = get_column_letter(cidx)
-        ws.cell(row=grand_row, column=cidx, value=f"=SUM({col_letter}{sum_start}:{col_letter}{sum_start+3})").number_format = number_fmt
-    # U/V も合算
-    for cidx in [col_U, col_V]:
-        col_letter = get_column_letter(cidx)
-        ws.cell(row=grand_row, column=cidx, value=f"=SUM({col_letter}{sum_start}:{col_letter}{sum_start})").number_format = number_fmt  # 上段のみ値が入る
-
-    # 罫線
-    for c in range(col_B, col_W+1):
-        ws.cell(row=grand_row, column=c).border = thin_border
-        ws.cell(row=grand_row, column=c).fill = gray_fill
-
-    # ---- 右外側「確認用」 & 一括チェック式（8）----
-    ws.cell(row=grand_row-1, column=col_X, value="確認用").alignment = center
-    g_letter = get_column_letter(col_G)
-    r_letter = get_column_letter(col_month_end)
-    ws.cell(row=grand_row, column=col_X, value=f"=SUM({g_letter}{first_data_row}:{r_letter}{last_data_row})/2").number_format = number_fmt
-
-    # ---- 2行下の「算式確認」行（9）----
-    check_row = grand_row + 2
-    ws.cell(row=check_row, column=col_E, value="算式確認")
-    for cidx in range(col_F, col_T+1):  # F..T
-        col_letter = get_column_letter(cidx)
-        ws.cell(row=check_row, column=cidx, value=f"=SUM({col_letter}{first_data_row}:{col_letter}{last_data_row})/2").number_format = number_fmt
-
-    # 備考列の幅（可変）
-    ws.column_dimensions[get_column_letter(col_W)].width = max(
+    ws.column_dimensions[get_column_letter(col_V+1)].width = max(
         [len(combine_bikou_contract(rec)) for rec in records] + [10]
     ) * 1.6
 
-    # ---- ウィンドウ枠の固定（4,5）----
-    try:
-        ws.freeze_panes = ws.cell(row=data_start_row, column=last_fixed_col+1)  # "D7" 相当
-        # → 左に C まで・上に 6 行目まで固定
-    except Exception:
-        pass  # 固定できなくても実害が出ないように
-
-    # 保存
-    import io
-    out = io.BytesIO()
-    wb.save(out)
-    return out.getvalue()
-
+    out_file = io.BytesIO()
+    wb.save(out_file)
+    return out_file.getvalue()
 
 # ========== Streamlit UI ==========
 st.set_page_config(page_title="入居管理表アプリ", layout="wide")
-st.title("📊 収支報告書PDFから入居管理表を作成（改修版）")
+st.title("📊 収支報告書PDFから入居管理表を作成（text_context絞り込み版）")
 
 PASSWORD = st.secrets["APP_PASSWORD"]
 pw = st.text_input("パスワードを入力してください", type="password")
