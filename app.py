@@ -325,51 +325,6 @@ async def process_files(files):
     months = sorted({m for r in out_sorted for m in r["monthly"].keys()})
     return out_sorted, months
 
-'''
-async def process_files(files):
-    tasks = [handle_file(file) for file in files]
-    results = await asyncio.gather(*tasks)
-
-    # 1) マージ
-    all_recs = {}  # key = (room, tenant)
-    for recs in results:
-        merge_records(all_recs, recs)
-
-    # 2) Pxx 付替え
-    fold_parking_Pxx(all_recs)
-
-    # 3) 出力用に並べ替え & 基準額付与
-    #    -> list[record] へ
-    out = []
-    for (room, tenant), rec in all_recs.items():
-        # 基準額は各科目の月次最大
-        def max_of(k):
-            return max([clean_int(v.get(k,0)) for v in rec["monthly"].values()] or [0])
-
-        rec["base_rent"]    = max_of("rent")
-        rec["base_fee"]     = max_of("fee")
-        rec["base_parking"] = max_of("parking")
-        rec["base_water"]   = max_of("water")
-        out.append(rec)
-
-    # 室番号数値→名前→月最小 でソート
-    def room_sort_key(r):
-        rm = r["room"]
-        num = 9999
-        if rm.upper().startswith("P"):
-            num = 9000 + int(re.sub(r"\D","",rm) or 0)  # 駐車は末尾に
-        else:
-            num = int(re.sub(r"\D","",rm) or 0)
-        first_month = sorted(r["monthly"].keys())[0] if r["monthly"] else "9999-99"
-        return (num, r["tenant"] or "~", first_month)
-
-    out_sorted = sorted(out, key=room_sort_key)
-
-    # 月リスト（全レコードのユニーク月）
-    months = sorted({m for r in out_sorted for m in r["monthly"].keys()})
-    return out_sorted, months
-'''
-
 # ========== Excel 生成（サンプル準拠） ==========
 def combine_bikou_contract(rec):
     """契約全体の備考集合（ユニーク）"""
