@@ -80,7 +80,8 @@ async def call_openai_vision_async(base64_images, text_context, default_month_id
         ]}
     ]
     resp = await client.chat.completions.create(
-        model="gpt-4o",
+        #model="gpt-4o",
+        model="gpt-5",
         messages=messages,
         temperature=0.0,
         max_tokens=4096,
