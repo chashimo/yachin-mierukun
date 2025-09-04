@@ -84,7 +84,8 @@ async def call_openai_vision_async(base64_images, text_context, default_month_id
         model="gpt-5",
         messages=messages,
         temperature=0.0,
-        max_tokens=4096,
+        #max_tokens=4096,
+        max_completion_tokens=4096,
     )
     return resp.choices[0].message.content
 
