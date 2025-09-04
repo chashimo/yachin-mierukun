@@ -103,6 +103,7 @@ async def call_openai_vision_async(base64_images, text_context, default_month_id
             model=model_name,
             input=inputs,
             max_output_tokens=8192,
+            service_tier="priority",
         )
 
         # Responses API は output_text に最終文字列が入る（SDK準拠）
