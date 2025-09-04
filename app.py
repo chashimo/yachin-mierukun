@@ -199,7 +199,7 @@ def month_key(s: str) -> str:
 
 
 # ========== 1ファイル処理 ==========
-async def handle_file(file, max_attempts=3):
+async def handle_file(file, max_attempts=1):
     file_name = file.name
     logger.info(f"開始: {file_name}")
     default_month_id = extract_month_from_filename(file_name)
