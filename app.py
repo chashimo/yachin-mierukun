@@ -80,13 +80,7 @@ async def call_openai_vision_async(base64_images, text_context, default_month_id
             "【OCR補助テキスト】\n" + (text_context or "") +
             "\n\nこのPDFには " + default_month_id + " 付近の月が含まれる可能性があります。"
             "表内に現れた全ての『年／月』を抽出してください。\n\n"
-            "出力仕様（厳守）:\n"
-            "・最上位は JSON オブジェクトで、キーは 'records' のみとする。\n"
-            "・値は配列。\n"
-            "・各要素は {\"room\":..., \"tenant\":..., \"monthly\":{...}, \"shikikin\":0, \"linked_room\":\"\"}。\n"
-            "・説明文・プレーンテキスト・コードフェンス・他のキーは一切出力しない。\n\n"
-            "有効例:\n"
-            "{\"records\":[{\"room\":\"0101\",\"tenant\":\"A社\",\"monthly\":{\"2024-08\":{\"rent\":50000,\"fee\":2000,\"parking\":0,\"water\":0,\"reikin\":0,\"koushin\":0,\"bikou\":\"\"}},\"shikikin\":0,\"linked_room\":\"\"}]}"
+            "※ 出力は純粋な JSON オブジェクトのみ。"
         )
 
     # gpt-5: Responses API
@@ -213,6 +207,10 @@ async def handle_file(file, max_attempts=1):
         try:
             raw = await call_openai_vision_async(b64s, text_context, default_month_id)
             s = raw.strip()
+
+			# ★ デバッグ追加：先頭400文字をログに出す
+            logger.warning(f"{file_name}: レスポンス先頭400文字 (attempt {attempt}): {s[:400]!r}")
+
             # コードフェンスの除去
             s = s.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
             obj = json.loads(s)
