@@ -102,7 +102,6 @@ async def call_openai_vision_async(base64_images, text_context, default_month_id
             model=model_name,
             input=inputs,
             max_output_tokens=4096,              # ← gpt-5 系は max_completion_tokens 相当
-            response_format={"type": "json_object"},  # ← JSON 強制
         )
 
         # Responses API は output_text に最終文字列が入る（SDK準拠）
