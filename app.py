@@ -48,7 +48,7 @@ async def call_openai_vision_async(base64_images, text_context, default_month_id
     gpt-5 のときは Responses API を使用（画像 + テキストの混在入力に対応 & JSON強制）。
     それ以外（gpt-4o など）は従来どおり Chat Completions を使う。
     """
-    model_name = "gpt-5-mini"
+    model_name = "gpt-5"
 	
 	# 共通の「やること」
     user_text = (
