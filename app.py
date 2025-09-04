@@ -83,7 +83,7 @@ async def call_openai_vision_async(base64_images, text_context, default_month_id
         #model="gpt-4o",
         model="gpt-5",
         messages=messages,
-        temperature=0.0,
+        #temperature=0.0,
         #max_tokens=4096,
         max_completion_tokens=4096,
     )
@@ -288,6 +288,44 @@ def fold_parking_Pxx(all_recs):
     for key in to_delete:
         all_recs.pop(key, None)
 
+
+# ===== 直列処理版 =====
+async def process_files(files):
+    # 1) 直列で1ファイルずつ処理
+    all_recs = {}  # key = (room, tenant)
+    for file in files:
+        result = await handle_file(file)  # ← gather()せず順次 await
+        if isinstance(result, list):      # 正常（norm_recordsのリスト）
+            merge_records(all_recs, result)
+        elif isinstance(result, tuple):   # (filename, None) エラー通知パス
+            st.warning(f"{result[0]} の出力がJSONとして解釈できませんでした。")
+
+    # 2) Pxx 付替え（従来どおり）
+    fold_parking_Pxx(all_recs)
+
+    # 3) 出力用に基準額付与（従来どおり）
+    out = []
+    for (room, tenant), rec in all_recs.items():
+        def max_of(k):
+            return max([clean_int(v.get(k, 0)) for v in rec["monthly"].values()] or [0])
+        rec["base_rent"]    = max_of("rent")
+        rec["base_fee"]     = max_of("fee")
+        rec["base_parking"] = max_of("parking")
+        rec["base_water"]   = max_of("water")
+        out.append(rec)
+
+    # 4) 並べ替え & 月リスト（従来どおり）
+    def room_sort_key(r):
+        rm = r["room"]
+        num = 9000 + int(re.sub(r"\D", "", rm) or 0) if rm.upper().startswith("P") else int(re.sub(r"\D", "", rm) or 0)
+        first_month = sorted(r["monthly"].keys())[0] if r["monthly"] else "9999-99"
+        return (num, r["tenant"] or "~", first_month)
+
+    out_sorted = sorted(out, key=room_sort_key)
+    months = sorted({m for r in out_sorted for m in r["monthly"].keys()})
+    return out_sorted, months
+
+'''
 async def process_files(files):
     tasks = [handle_file(file) for file in files]
     results = await asyncio.gather(*tasks)
@@ -330,6 +368,7 @@ async def process_files(files):
     # 月リスト（全レコードのユニーク月）
     months = sorted({m for r in out_sorted for m in r["monthly"].keys()})
     return out_sorted, months
+'''
 
 # ========== Excel 生成（サンプル準拠） ==========
 def combine_bikou_contract(rec):
