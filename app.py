@@ -66,41 +66,78 @@ VISION_INSTRUCTIONS = (
     "6) JSON 以外の文字（前置き・コードブロック）は出力しない。"
 )
 
+
 async def call_openai_vision_async(base64_images, text_context, default_month_id):
-    image_parts = [{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}} for b64 in base64_images]
+    """
+    gpt-5 のときは Responses API を使用（画像 + テキストの混在入力に対応 & JSON強制）。
+    それ以外（gpt-4o など）は従来どおり Chat Completions を使う。
+    """
+    # 使うモデル名（必要なら st.secrets から取得でもOK）
+    model_name = "gpt-5"  # ← ここで gpt-4o / gpt-5 を切り替え
 
-    messages = [
-        {"role": "system", "content": VISION_INSTRUCTIONS},
-        {"role": "user", "content": [
-            *image_parts,
-            {"type": "text", "text":
-                f"【OCR補助テキスト】\n{text_context}\n\n"
-                f"このPDFには {default_month_id} 付近の月が含まれる可能性があります。"
-                f"表内に現れた全ての『年／月』を抽出してください。\n\n"
-                "出力は純粋な JSON オブジェクトのみ。（コードフェンスや説明文は一切不要）"}
-        ]}
-    ]
+    # 共通の「やること」
+    user_text = (
+        "【OCR補助テキスト】\n" + (text_context or "") +
+        "\n\nこのPDFには " + default_month_id + " 付近の月が含まれる可能性があります。"
+        "表内に現れた全ての『年／月』を抽出してください。\n\n"
+        "出力は純粋な JSON オブジェクトのみ。（コードフェンスや説明文は一切不要）"
+    )
 
-    model_name = "gpt-5"  # いまの設定
-
-    params = {
-        "model": model_name,
-        "messages": messages,
-    }
+    # gpt-5: Responses API
     if model_name.startswith("gpt-5"):
-        # gpt-5: temperatureは送らない／completion上限で指定／JSONを強制
-        params["max_completion_tokens"] = 4096
-        params["response_format"] = {"type": "json_object"}
-    else:
-        params["temperature"] = 0.0
-        params["max_tokens"] = 4096
-        # 4o系でもJSON固定をかけたい場合は下記を有効化（対応モデルのみ）
-        # params["response_format"] = {"type": "json_object"}
+        # Responses API の input 形式（テキスト + 複数画像）
+        # 画像パーツは input_image で並べる
+        inputs = [{
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": user_text},
+                *[
+                    {"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"}
+                    for b64 in base64_images
+                ],
+            ],
+        }]
 
-    resp = await client.chat.completions.create(**params)
-    # 念のため content が None のこともあるのでケア
-    content = resp.choices[0].message.content or ""
-    return content
+        resp = await client.responses.create(
+            model=model_name,
+            input=inputs,
+            max_output_tokens=4096,              # ← gpt-5 系は max_completion_tokens 相当
+            response_format={"type": "json_object"},  # ← JSON 強制
+        )
+
+        # Responses API は output_text に最終文字列が入る（SDK準拠）
+        content = getattr(resp, "output_text", None)
+        if not content:
+            # 念のため詳細をログ
+            try:
+                logger.warning(f"Responses raw dump(head): {str(resp)[:400]}")
+            except Exception:
+                pass
+            content = ""
+        return content
+
+    # gpt-4o など: Chat Completions（従来どおり）
+    else:
+        # 画像 + テキストの“パーツ配列”を Chat Completions に渡す
+        image_parts = [
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
+            for b64 in base64_images
+        ]
+        messages = [
+            {"role": "system", "content": VISION_INSTRUCTIONS},
+            {"role": "user", "content": [*image_parts, {"type": "text", "text": user_text}]},
+        ]
+
+        resp = await client.chat.completions.create(
+            model=model_name,
+            messages=messages,
+            temperature=0.0,
+            max_tokens=4096,
+        )
+        content = resp.choices[0].message.content or ""
+        return content
+
+
 
 # ========== ユーティリティ ==========
 def convert_pdf_to_images(pdf_bytes, dpi=220):
