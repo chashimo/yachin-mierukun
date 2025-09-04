@@ -102,7 +102,7 @@ async def call_openai_vision_async(base64_images, text_context, default_month_id
         resp = await client.responses.create(
             model=model_name,
             input=inputs,
-            max_output_tokens=4096,              # ← gpt-5 系は max_completion_tokens 相当
+            max_output_tokens=8192,
         )
 
         # Responses API は output_text に最終文字列が入る（SDK準拠）
