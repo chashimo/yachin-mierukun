@@ -74,14 +74,20 @@ async def call_openai_vision_async(base64_images, text_context, default_month_id
     """
     # 使うモデル名（必要なら st.secrets から取得でもOK）
     model_name = "gpt-5"  # ← ここで gpt-4o / gpt-5 を切り替え
-
-    # 共通の「やること」
+	
+	# 共通の「やること」
     user_text = (
-        "【OCR補助テキスト】\n" + (text_context or "") +
-        "\n\nこのPDFには " + default_month_id + " 付近の月が含まれる可能性があります。"
-        "表内に現れた全ての『年／月』を抽出してください。\n\n"
-        "出力は純粋な JSON オブジェクトのみ。（コードフェンスや説明文は一切不要）"
-    )
+            "【OCR補助テキスト】\n" + (text_context or "") +
+            "\n\nこのPDFには " + default_month_id + " 付近の月が含まれる可能性があります。"
+            "表内に現れた全ての『年／月』を抽出してください。\n\n"
+            "出力仕様（厳守）:\n"
+            "・最上位は JSON オブジェクトで、キーは 'records' のみとする。\n"
+            "・値は配列。\n"
+            "・各要素は {\"room\":..., \"tenant\":..., \"monthly\":{...}, \"shikikin\":0, \"linked_room\":\"\"}。\n"
+            "・説明文・プレーンテキスト・コードフェンス・他のキーは一切出力しない。\n\n"
+            "有効例:\n"
+            "{\"records\":[{\"room\":\"0101\",\"tenant\":\"A社\",\"monthly\":{\"2024-08\":{\"rent\":50000,\"fee\":2000,\"parking\":0,\"water\":0,\"reikin\":0,\"koushin\":0,\"bikou\":\"\"}},\"shikikin\":0,\"linked_room\":\"\"}]}"
+        )
 
     # gpt-5: Responses API
     if model_name.startswith("gpt-5"):
@@ -190,6 +196,7 @@ def month_key(s: str) -> str:
     m = re.match(r"(\d{4})[-/年](\d{1,2})", str(s))
     if not m: return s
     return f"{m.group(1)}-{m.group(2).zfill(2)}"
+
 
 # ========== 1ファイル処理 ==========
 async def handle_file(file, max_attempts=3):
