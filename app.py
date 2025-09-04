@@ -102,29 +102,6 @@ async def call_openai_vision_async(base64_images, text_context, default_month_id
     content = resp.choices[0].message.content or ""
     return content
 
-async def call_openai_vision_async(base64_images, text_context, default_month_id):
-    image_parts = [{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}} for b64 in base64_images]
-    messages = [
-        {"role": "system", "content": VISION_INSTRUCTIONS},
-        {"role": "user", "content": [
-            *image_parts,
-            {"type": "text", "text":
-                f"【OCR補助テキスト】\n{text_context}\n\n"
-                f"このPDFには {default_month_id} 付近の月が含まれる可能性があります。"
-                f"表内に現れた全ての『年／月』を抽出してください。\n\n"
-                "※ 出力は純粋な JSON オブジェクトのみ。"}
-        ]}
-    ]
-    resp = await client.chat.completions.create(
-        #model="gpt-4o",
-        model="gpt-5",
-        messages=messages,
-        #temperature=0.0,
-        #max_tokens=4096,
-        max_completion_tokens=4096,
-    )
-    return resp.choices[0].message.content
-
 # ========== ユーティリティ ==========
 def convert_pdf_to_images(pdf_bytes, dpi=220):
     pdf = fitz.open(stream=pdf_bytes, filetype="pdf")
