@@ -39,105 +39,53 @@ client = AsyncOpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 # ========== Vision: PDF → JSON 抽出 ==========
 VISION_INSTRUCTIONS = (
-    "あなたは不動産管理アシスタントです。"
+    "あなたは不動産管理アシスタントです。収支報告書（送金明細書）から、"
+    "各『室番号×賃借人（契約）』の入居情報を抽出し、厳格な JSON で返してください。\n"
+    "要件:\n"
+    "1) 出力は必ず次のトップレベル構造:\n"
+    "{\n"
+    "  \"records\": [\n"
+    "    {\n"
+    "      \"room\": \"0101\" または \"P01\" など,\n"
+    "      \"tenant\": \"賃借人名\"（駐車場(Pxx)は空文字でも可）, \n"
+    "      \"monthly\": {\n"
+    "        \"YYYY-MM\": {\n"
+    "          \"rent\": 家賃, \"fee\": 共益費, \"parking\": 駐車料, \"water\": 水道料,\n"
+    "          \"reikin\": 礼金, \"koushin\": 更新料, \"bikou\": \"備考文字列\"\n"
+    "        }, ...\n"
+    "      },\n"
+    "      \"shikikin\": 敷金合計（分かれば。なければ0）, \n"
+    "      \"linked_room\": \"0001\" のように、Pxx行が特定住戸に紐付く場合に記す（備考の（0001）表記等から判断）\n"
+    "    }, ...\n"
+    "  ]\n"
+    "}\n"
+    "2) 各数値はカンマ無しの整数。空欄は 0。\n"
+    "3) 月キーは YYYY-MM（例: 2024-11）。表に現れた全ての月を対象。\n"
+    "4) 『P01/P02…』など駐車場の行は必ず room に Pxx を入れ、備考に「（0001）込駐車場」等があれば linked_room に『0001』のように数字4桁で格納。\n"
+    "5) 同一室で入退去がある場合は賃借人ごとに別レコード（records の要素を分ける）。\n"
+    "6) JSON 以外の文字（前置き・コードブロック）は出力しない。"
 )
 
-
 async def call_openai_vision_async(base64_images, text_context, default_month_id):
-    """
-    gpt-5 のときは Responses API を使用（画像 + テキストの混在入力に対応 & JSON強制）。
-    それ以外（gpt-4o など）は従来どおり Chat Completions を使う。
-    """
-    model_name = "gpt-5"
-	
-	# 共通の「やること」
-    user_text = (
-        "収支報告書（送金明細書）から、"
-        "各『室番号×賃借人（契約）』の入居情報を抽出し、厳格な JSON で返してください。\n"
-        "要件:\n"
-        "1) 出力は必ず次のトップレベル構造:\n"
-        "{\n"
-        "  \"records\": [\n"
-        "    {\n"
-        "      \"room\": \"0101\" または \"P01\" など,\n"
-        "      \"tenant\": \"賃借人名\"（駐車場(Pxx)は空文字でも可）, \n"
-        "      \"monthly\": {\n"
-        "        \"YYYY-MM\": {\n"
-        "          \"rent\": 家賃, \"fee\": 共益費, \"parking\": 駐車料, \"water\": 水道料,\n"
-        "          \"reikin\": 礼金, \"koushin\": 更新料, \"bikou\": \"備考文字列\"\n"
-        "        }, ...\n"
-        "      },\n"
-        "      \"shikikin\": 敷金合計（分かれば。なければ0）, \n"
-        "      \"linked_room\": \"0001\" のように、Pxx行が特定住戸に紐付く場合に記す（備考の（0001）表記等から判断）\n"
-        "    }, ...\n"
-        "  ]\n"
-        "}\n"
-        "2) 各数値はカンマ無しの整数。空欄は 0。\n"
-        "3) 月キーは YYYY-MM（例: 2024-11）。表に現れた全ての月を対象。\n"
-        "4) 『P01/P02…』など駐車場の行は必ず room に Pxx を入れ、備考に「（0001）込駐車場」等があれば linked_room に『0001』のように数字4桁で格納。\n"
-        "5) 同一室で入退去がある場合は賃借人ごとに別レコード（records の要素を分ける）。\n"
-        "6) JSON 以外の文字（前置き・コードブロック）は出力しない。\n\n"
-        "【OCR補助テキスト】\n" + (text_context or "") +
-        "\n\nこのPDFには " + default_month_id + " 付近の月が含まれる可能性があります。"
-        "表内に現れた全ての『年／月』を抽出してください。\n\n"
-        "※ 出力は純粋な JSON オブジェクトのみ。"
-        )
-
-    # gpt-5: Responses API
-    if model_name.startswith("gpt-5"):
-        # Responses API の input 形式（テキスト + 複数画像）
-        # 画像パーツは input_image で並べる
-        inputs = [{
-            "role": "user",
-            "content": [
-                {"type": "input_text", "text": user_text},
-                *[
-                    {"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"}
-                    for b64 in base64_images
-                ],
-            ],
-        }]
-
-        resp = await client.responses.create(
-            model=model_name,
-            input=inputs,
-            max_output_tokens=8192,
-            service_tier="priority",
-        )
-
-        # Responses API は output_text に最終文字列が入る（SDK準拠）
-        content = getattr(resp, "output_text", None)
-        if not content:
-            # 念のため詳細をログ
-            try:
-                logger.warning(f"Responses raw dump(head): {str(resp)[:400]}")
-            except Exception:
-                pass
-            content = ""
-        return content
-
-    # gpt-4o など: Chat Completions（従来どおり）
-    else:
-        # 画像 + テキストの“パーツ配列”を Chat Completions に渡す
-        image_parts = [
-            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
-            for b64 in base64_images
-        ]
-        messages = [
-            {"role": "system", "content": VISION_INSTRUCTIONS},
-            {"role": "user", "content": [*image_parts, {"type": "text", "text": user_text}]},
-        ]
-
-        resp = await client.chat.completions.create(
-            model=model_name,
-            messages=messages,
-            temperature=0.0,
-            max_tokens=4096,
-        )
-        content = resp.choices[0].message.content or ""
-        return content
-
-
+    image_parts = [{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}} for b64 in base64_images]
+    messages = [
+        {"role": "system", "content": VISION_INSTRUCTIONS},
+        {"role": "user", "content": [
+            *image_parts,
+            {"type": "text", "text":
+                f"【OCR補助テキスト】\n{text_context}\n\n"
+                f"このPDFには {default_month_id} 付近の月が含まれる可能性があります。"
+                f"表内に現れた全ての『年／月』を抽出してください。\n\n"
+                "※ 出力は純粋な JSON オブジェクトのみ。"}
+        ]}
+    ]
+    resp = await client.chat.completions.create(
+        model="gpt-4o",
+        messages=messages,
+        temperature=0.0,
+        max_tokens=4096,
+    )
+    return resp.choices[0].message.content
 
 # ========== ユーティリティ ==========
 def convert_pdf_to_images(pdf_bytes, dpi=220):
@@ -192,9 +140,8 @@ def month_key(s: str) -> str:
     if not m: return s
     return f"{m.group(1)}-{m.group(2).zfill(2)}"
 
-
 # ========== 1ファイル処理 ==========
-async def handle_file(file, max_attempts=1):
+async def handle_file(file, max_attempts=3):
     file_name = file.name
     logger.info(f"開始: {file_name}")
     default_month_id = extract_month_from_filename(file_name)
@@ -208,10 +155,6 @@ async def handle_file(file, max_attempts=1):
         try:
             raw = await call_openai_vision_async(b64s, text_context, default_month_id)
             s = raw.strip()
-
-			# ★ デバッグ追加：先頭400文字をログに出す
-            logger.warning(f"{file_name}: レスポンス先頭400文字 (attempt {attempt}): {s[:400]!r}")
-
             # コードフェンスの除去
             s = s.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
             obj = json.loads(s)
@@ -343,40 +286,46 @@ def fold_parking_Pxx(all_recs):
     for key in to_delete:
         all_recs.pop(key, None)
 
-
-# ===== 直列処理版 =====
 async def process_files(files):
-    # 1) 直列で1ファイルずつ処理
-    all_recs = {}  # key = (room, tenant)
-    for file in files:
-        result = await handle_file(file)  # ← gather()せず順次 await
-        if isinstance(result, list):      # 正常（norm_recordsのリスト）
-            merge_records(all_recs, result)
-        elif isinstance(result, tuple):   # (filename, None) エラー通知パス
-            st.warning(f"{result[0]} の出力がJSONとして解釈できませんでした。")
+    tasks = [handle_file(file) for file in files]
+    results = await asyncio.gather(*tasks)
 
-    # 2) Pxx 付替え（従来どおり）
+    # 1) マージ
+    all_recs = {}  # key = (room, tenant)
+    for recs in results:
+        merge_records(all_recs, recs)
+
+    # 2) Pxx 付替え
     fold_parking_Pxx(all_recs)
 
-    # 3) 出力用に基準額付与（従来どおり）
+    # 3) 出力用に並べ替え & 基準額付与
+    #    -> list[record] へ
     out = []
     for (room, tenant), rec in all_recs.items():
+        # 基準額は各科目の月次最大
         def max_of(k):
-            return max([clean_int(v.get(k, 0)) for v in rec["monthly"].values()] or [0])
+            return max([clean_int(v.get(k,0)) for v in rec["monthly"].values()] or [0])
+
         rec["base_rent"]    = max_of("rent")
         rec["base_fee"]     = max_of("fee")
         rec["base_parking"] = max_of("parking")
         rec["base_water"]   = max_of("water")
         out.append(rec)
 
-    # 4) 並べ替え & 月リスト（従来どおり）
+    # 室番号数値→名前→月最小 でソート
     def room_sort_key(r):
         rm = r["room"]
-        num = 9000 + int(re.sub(r"\D", "", rm) or 0) if rm.upper().startswith("P") else int(re.sub(r"\D", "", rm) or 0)
+        num = 9999
+        if rm.upper().startswith("P"):
+            num = 9000 + int(re.sub(r"\D","",rm) or 0)  # 駐車は末尾に
+        else:
+            num = int(re.sub(r"\D","",rm) or 0)
         first_month = sorted(r["monthly"].keys())[0] if r["monthly"] else "9999-99"
         return (num, r["tenant"] or "~", first_month)
 
     out_sorted = sorted(out, key=room_sort_key)
+
+    # 月リスト（全レコードのユニーク月）
     months = sorted({m for r in out_sorted for m in r["monthly"].keys()})
     return out_sorted, months
 
