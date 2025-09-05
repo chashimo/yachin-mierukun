@@ -359,6 +359,12 @@ def export_excel(records, months, property_name):
     red_font    = Font(color="9C0000")
     thin_border = Border(*[Side(style='thin')] * 4)
 
+	# 合計=黄、総合計=ピンク、太線枠
+    yellow_fill = PatternFill("solid", fgColor="FFF2CC")   # 合計
+    pink_fill   = PatternFill("solid", fgColor="F8CBAD")   # 総合計
+    thick_side  = Side(style="thick")
+    thick_border = Border(left=thick_side, right=thick_side, top=thick_side, bottom=thick_side)
+    
     num_months = len(months)
     # 列インデックス
     col_B = 2
@@ -392,6 +398,12 @@ def export_excel(records, months, property_name):
     ws.cell(row=4, column=col_B, value="物件名").alignment = center
     ws.merge_cells(start_row=4, start_column=col_D, end_row=4, end_column=col_F)
     ws.cell(row=4, column=col_D, value=(property_name or "")).alignment = center
+
+    # 太線罫線
+    for c in range(col_B, col_C+1):  # B4:C4
+        ws.cell(row=4, column=c).border = thick_border
+    for c in range(col_D, col_F+1):  # D4:F4
+        ws.cell(row=4, column=c).border = thick_border
 
     # ---- ヘッダ（B6..）----
     ws.merge_cells(start_row=header_row, start_column=col_B, end_row=header_row, end_column=col_C)
@@ -484,12 +496,12 @@ def export_excel(records, months, property_name):
         ws.merge_cells(start_row=row, start_column=col_W, end_row=row+4, end_column=col_W)
         bw = ws.cell(row=row, column=col_W, value=combine_bikou_contract(rec)); bw.alignment = center_vert; bw.font = red_font
 
-        # 罫線・網掛け（ブロック内）
+        # 罫線・黄色網掛け（ブロック内）
         for c in range(col_B, col_W+1):
             for r in range(row, row+5):
                 ws.cell(row=r, column=c).border = thin_border
         for c in range(col_B, col_W+1):
-            ws.cell(row=row+4, column=c).fill = gray_fill
+            ws.cell(row=row+4, column=c).fill = yellow_fill
 
         blocks.append((row, row+4))
         row += 5
@@ -547,10 +559,10 @@ def export_excel(records, months, property_name):
         col_letter = get_column_letter(cidx)
         ws.cell(row=grand_row, column=cidx, value=f"=SUM({col_letter}{sum_start}:{col_letter}{sum_start})").number_format = number_fmt  # 上段のみ値が入る
 
-    # 罫線
+    # 総合計罫線、ピンク
     for c in range(col_B, col_W+1):
         ws.cell(row=grand_row, column=c).border = thin_border
-        ws.cell(row=grand_row, column=c).fill = gray_fill
+        ws.cell(row=grand_row, column=c).fill = pink_fill
 
     # ---- 右外側「確認用」 & 一括チェック式（8）----
     ws.cell(row=grand_row-1, column=col_X, value="確認用").alignment = center
