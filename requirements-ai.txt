@@ -3,4 +3,6 @@ openpyxl
 pdfplumber
 PyMuPDF
 Pillow
+tenacity
+openai
 REQ
