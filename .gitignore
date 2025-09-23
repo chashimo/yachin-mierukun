@@ -1,2 +1,9 @@
 app.py.backup*
 *.backup*
+
+# secrets (keep untracked)
+.streamlit/secrets.toml
+
+# keep local AI reference out of main
+app_ai_version.py
+
