@@ -1,5 +1,6 @@
 app.py.backup*
 *.backup*
+<<<<<<< Updated upstream
 
 # secrets (keep untracked)
 .streamlit/secrets.toml
@@ -7,3 +8,6 @@ app.py.backup*
 # keep local AI reference out of main
 app_ai_version.py
 
+=======
+app_ai_version.py
+>>>>>>> Stashed changes
