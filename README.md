@@ -4,7 +4,7 @@
 収支報告書（PDF）から入居管理表（Excel）を自動生成するツール。  
 個人開発のプロジェクト。外部公開・再利用は想定していない。
 
-注意: v2.2.0 は文字情報を含むPDFのみ対応しています。
+注意: v2.2.0 は文字情報を含む大和財託の収支報告書PDFのみ対応しています。
 
 ## バージョン
 - v2.2.0: **テキストPDF専用版（AIなし）**  
@@ -24,3 +24,5 @@ streamlit run app.py
 
 - v1 系を使いたい場合は git checkout v1.0.1 または git checkout v1-maintenance
 - v2 系が現行の main ブランチ
+- `scripts/rasterize_pdf_to_imagepdf.py`で、テキスト抽出可能なPDFから、テキスト抽出不可能なPDFを生成できます。
+
