@@ -547,9 +547,9 @@ def export_excel(records, months, property_name):
     ws.cell(row=header_row, column=col_T, value="期末\n未収/前受")
     ws.cell(row=header_row, column=col_U, value="礼金・更新料")
     ws.cell(row=header_row, column=col_V, value="退去時精算")   # ←★追加
-    ws.cell(row=header_row, column=col_V, value="敷金")
-    ws.cell(row=header_row, column=col_W, value="備考")
-    for c in range(col_B, col_W+1):
+    ws.cell(row=header_row, column=col_W, value="敷金")
+    ws.cell(row=header_row, column=col_X, value="備考")
+    for c in range(col_B, col_X+1):
         cc = ws.cell(row=header_row, column=c)
         cc.fill = header_fill
         cc.font = bold_font
