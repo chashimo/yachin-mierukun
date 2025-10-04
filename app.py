@@ -211,7 +211,7 @@ def parse_income_table_to_records(table_2d, default_month_id: str):
         "water":   find_col("水道代","水道料"),
         "reikin":  find_col("礼金"),
         "koushin": find_col("更新料"),
-        "taikyo":  find_col("退去時精算金","退去時清算金"),  # ←★追加（清算/精算 両表記対応）
+        "taikyo":  find_col("退去時精算金","退去時清算金","退去時精算","退去時清算","退去精算金","退去清算金"),
         "bikou":   find_col("備考","摘要","特記事項"),
     }
 
@@ -319,15 +319,16 @@ def merge_records(all_recs, new_recs):
         all_recs[key]["shikikin"] = max(all_recs[key]["shikikin"], clean_int(r.get("shikikin", 0)))
         for mk, mv in (r.get("monthly") or {}).items():
             dst = all_recs[key]["monthly"].setdefault(mk, {
-                "rent":0,"fee":0,"parking":0,"water":0,"reikin":0,"koushin":0,"bikou":""
-            })
-            dst["rent"]    += clean_int(mv.get("rent"))
-            dst["fee"]     += clean_int(mv.get("fee"))
-            dst["parking"] += clean_int(mv.get("parking"))
-            dst["water"]   += clean_int(mv.get("water"))
-            dst["reikin"]  += clean_int(mv.get("reikin"))
-            dst["koushin"] += clean_int(mv.get("koushin"))
-            dst["taikyo"]  += clean_int(mv.get("taikyo"))   # ←★追加
+                "rent":0,"fee":0,"parking":0,"water":0,"reikin":0,"koushin":0,"taikyo":0,"bikou":""
+                })
+            dst["rent"]    += clean_int(mv.get("rent", 0))
+            dst["fee"]     += clean_int(mv.get("fee", 0))
+            dst["parking"] += clean_int(mv.get("parking", 0))
+            dst["water"]   += clean_int(mv.get("water", 0))
+            dst["reikin"]  += clean_int(mv.get("reikin", 0))
+            dst["koushin"] += clean_int(mv.get("koushin", 0))
+            dst["taikyo"]  += clean_int(mv.get("taikyo", 0))   # ← ここが安全に
+
             b = str(mv.get("bikou") or "").strip()
             if b:
                 dst["bikou"] = append_note_unique(dst.get("bikou"), b)
@@ -383,7 +384,7 @@ def fold_parking_Pxx(all_recs):
         # 月ごとに駐車料を加算し、備考にメモ
         for mk, mv in (rec.get("monthly") or {}).items():
             dst = target["monthly"].setdefault(
-                mk, {"rent":0,"fee":0,"parking":0,"water":0,"reikin":0,"koushin":0,"bikou":""}
+                mk, {"rent":0,"fee":0,"parking":0,"water":0,"reikin":0,"koushin":0,"taikyo":0,"bikou":""}
             )
             add_p = clean_int(mv.get("parking"))
             if add_p:
