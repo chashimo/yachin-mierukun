@@ -7,3 +7,5 @@ app.py.backup*
 # keep local AI reference out of main
 app_ai_version.py
 
+secrets.toml
+config.toml
