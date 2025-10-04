@@ -211,6 +211,7 @@ def parse_income_table_to_records(table_2d, default_month_id: str):
         "water":   find_col("水道代","水道料"),
         "reikin":  find_col("礼金"),
         "koushin": find_col("更新料"),
+        "taikyo":  find_col("退去時精算金","退去時清算金"),  # ←★追加（清算/精算 両表記対応）
         "bikou":   find_col("備考","摘要","特記事項"),
     }
 
@@ -258,6 +259,7 @@ def parse_income_table_to_records(table_2d, default_month_id: str):
                     "water":   clean_int(_to_int_like(at(row, "water"))),
                     "reikin":  clean_int(_to_int_like(at(row, "reikin"))),
                     "koushin": clean_int(_to_int_like(at(row, "koushin"))),
+                    "taikyo":  clean_int(_to_int_like(at(row, "taikyo"))),  # ←★追加
                     "bikou":   at(row, "bikou"),
                 }
             },
@@ -325,6 +327,7 @@ def merge_records(all_recs, new_recs):
             dst["water"]   += clean_int(mv.get("water"))
             dst["reikin"]  += clean_int(mv.get("reikin"))
             dst["koushin"] += clean_int(mv.get("koushin"))
+            dst["taikyo"]  += clean_int(mv.get("taikyo"))   # ←★追加
             b = str(mv.get("bikou") or "").strip()
             if b:
                 dst["bikou"] = append_note_unique(dst.get("bikou"), b)
@@ -499,13 +502,16 @@ def export_excel(records, months, property_name):
     
     num_months = len(months)
     col_B = 2; col_C = 3; col_D = 4; col_E = 5; col_F = 6; col_G = 7
-    col_month_end = 6 + num_months
-    col_S = col_month_end + 1
-    col_T = col_month_end + 2
-    col_U = col_month_end + 3
-    col_V = col_month_end + 4
-    col_W = col_month_end + 5
-    col_X = col_W + 1
+
+    # 列インデックスの再定義
+    col_month_end = 6 + num_months        # G.. の最終月
+    col_S = col_month_end + 1             # 合計
+    col_T = col_month_end + 2             # 期末 未収/前受
+    col_U = col_month_end + 3             # 礼金・更新料
+    col_V = col_month_end + 4             # 退去時精算 ←★新設
+    col_W = col_month_end + 5             # 敷金
+    col_X = col_month_end + 6             # 備考
+    col_Y = col_X + 1                     # 右外側「確認用」
 
     # ---- タイトル & 物件名 ----
     ws.merge_cells(start_row=2, start_column=col_B, end_row=2, end_column=col_W)
@@ -539,6 +545,7 @@ def export_excel(records, months, property_name):
     ws.cell(row=header_row, column=col_S, value="合計")
     ws.cell(row=header_row, column=col_T, value="期末\n未収/前受")
     ws.cell(row=header_row, column=col_U, value="礼金・更新料")
+    ws.cell(row=header_row, column=col_V, value="退去時精算")   # ←★追加
     ws.cell(row=header_row, column=col_V, value="敷金")
     ws.cell(row=header_row, column=col_W, value="備考")
     for c in range(col_B, col_W+1):
@@ -558,6 +565,7 @@ def export_excel(records, months, property_name):
         base_w = rec.get("base_water",0)
         shikikin = rec.get("shikikin",0)
         reikin_koushin_total = sum((mv.get("reikin",0)+mv.get("koushin",0)) for mv in rec.get("monthly",{}).values())
+        taikyo_total = sum(mv.get("taikyo",0) for mv in rec.get("monthly",{}).values())  # ←★新設
 
         # 左側（室番号/賃借人）
         ws.merge_cells(start_row=row,   start_column=col_B, end_row=row+4, end_column=col_B)
@@ -598,21 +606,31 @@ def export_excel(records, months, property_name):
             ws.cell(row=row+r_i, column=col_T, value=0).number_format = number_fmt
         ws.cell(row=row+4, column=col_T, value=f"=SUM({get_column_letter(col_T)}{row}:{get_column_letter(col_T)}{row+3})").number_format = number_fmt
 
-        # U: 礼金・更新料（5行結合）
+		# U: 礼金・更新料（5行結合）
         ws.merge_cells(start_row=row, start_column=col_U, end_row=row+4, end_column=col_U)
-        cu = ws.cell(row=row, column=col_U, value=reikin_koushin_total); cu.alignment = center_vert; cu.number_format = number_fmt
-        # V: 敷金（5行結合）
+        ws.cell(row=row, column=col_U, value=reikin_koushin_total).alignment = center_vert
+        ws.cell(row=row, column=col_U).number_format = number_fmt
+		
+        # V: 退去時精算（5行結合） ←★新設
         ws.merge_cells(start_row=row, start_column=col_V, end_row=row+4, end_column=col_V)
-        cv = ws.cell(row=row, column=col_V, value=shikikin); cv.alignment = center_vert; cv.number_format = number_fmt
-        # W: 備考（5行結合）
-        ws.merge_cells(start_row=row, start_column=col_W, end_row=row+4, end_column=col_W)
-        bw = ws.cell(row=row, column=col_W, value=xls_clean(combine_bikou_contract(rec))); bw.alignment = center_vert; bw.font = red_font
+        ws.cell(row=row, column=col_V, value=taikyo_total).alignment = center_vert
+        ws.cell(row=row, column=col_V).number_format = number_fmt
 
-        # 罫線・黄色網掛け
-        for c in range(col_B, col_W+1):
+        # W: 敷金（5行結合）
+        ws.merge_cells(start_row=row, start_column=col_W, end_row=row+4, end_column=col_W)
+        ws.cell(row=row, column=col_W, value=shikikin).alignment = center_vert
+        ws.cell(row=row, column=col_W).number_format = number_fmt
+		
+        # X: 備考（5行結合）
+        ws.merge_cells(start_row=row, start_column=col_X, end_row=row+4, end_column=col_X)
+        ws.cell(row=row, column=col_X, value=xls_clean(combine_bikou_contract(rec))).alignment = center_vert
+        ws.cell(row=row, column=col_X).font = red_font
+
+		# 罫線・網掛けの範囲上限を W→X に更新
+        for c in range(col_B, col_X+1):
             for r in range(row, row+5):
                 ws.cell(row=r, column=c).border = thin_border
-        for c in range(col_B, col_W+1):
+        for c in range(col_B, col_X+1):
             ws.cell(row=row+4, column=c).fill = yellow_fill
 
         row += 5
@@ -634,7 +652,7 @@ def export_excel(records, months, property_name):
         for cidx in range(col_E, col_T+1):
             col_letter = get_column_letter(cidx)
             ws.cell(row=r, column=cidx, value=f"=SUMIF($D${first_data_row}:$D${last_data_row},$D${r},{sumif_range(col_letter)})").number_format = number_fmt
-    for cidx in [col_U, col_V]:
+    for cidx in [col_U, col_V, col_W]: # ←★ U(礼更),V(退清),W(敷金) 3列を合計
         col_letter = get_column_letter(cidx)
         ws.cell(row=sum_start, column=cidx, value=f"=SUM({col_letter}{first_data_row}:{col_letter}{last_data_row})").number_format = number_fmt
         for i in range(1,4):
@@ -653,18 +671,18 @@ def export_excel(records, months, property_name):
     for cidx in range(col_E, col_T+1):
         col_letter = get_column_letter(cidx)
         ws.cell(row=grand_row, column=cidx, value=f"=SUM({col_letter}{sum_start}:{col_letter}{sum_start+3})").number_format = number_fmt
-    for cidx in [col_U, col_V]:
+    for cidx in [col_U, col_V, col_W]:   # ←★ 3列
         col_letter = get_column_letter(cidx)
         ws.cell(row=grand_row, column=cidx, value=f"=SUM({col_letter}{sum_start}:{col_letter}{sum_start})").number_format = number_fmt
-    for c in range(col_B, col_W+1):
+    for c in range(col_B, col_X+1):
         ws.cell(row=grand_row, column=c).border = thin_border
         ws.cell(row=grand_row, column=c).fill = pink_fill
 
-    # ---- 右外側「確認用」 & 一括チェック式 ----
-    ws.cell(row=grand_row-1, column=col_X, value=xls_clean("確認用")).alignment = center
+    # 右外側「確認用」は X のさらに右（= Y列）を使用
+    ws.cell(row=grand_row-1, column=col_Y, value=xls_clean("確認用")).alignment = center
     g_letter = get_column_letter(col_G)
     r_letter = get_column_letter(col_month_end)
-    ws.cell(row=grand_row, column=col_X, value=f"=SUM({g_letter}{first_data_row}:{r_letter}{last_data_row})/2").number_format = number_fmt
+    ws.cell(row=grand_row, column=col_Y, value=f"=SUM({g_letter}{first_data_row}:{r_letter}{last_data_row})/2").number_format = number_fmt
 
     # ---- 2行下の「算式確認」行 ----
     check_row = grand_row + 2
